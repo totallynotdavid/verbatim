@@ -12,6 +12,7 @@ Architecture, data model, and phased roadmap: see
 ```
 apps/
   web/          # Next.js site (App Router)
+  extension/    # Chrome MV3 extension that captures Google Meet captions
 packages/
   ui/           # Shared UI components
   convex/       # Convex schema and functions for apps/web
