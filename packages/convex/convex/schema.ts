@@ -6,7 +6,6 @@ export default defineSchema({
 	...authTables,
 
 	users: defineTable({
-		// Fields required by Convex Auth.
 		name: v.optional(v.string()),
 		image: v.optional(v.string()),
 		email: v.optional(v.string()),
@@ -18,8 +17,7 @@ export default defineSchema({
 		googleSub: v.optional(v.string()),
 		role: v.optional(v.union(v.literal("tutor"), v.literal("student"))),
 		pairedWithUserId: v.optional(v.id("users")),
-		// User-level consent for future recordings. Session fields snapshot this
-		// value when a session starts.
+		// User-level consent. Sessions snapshot it when they start.
 		standingConsent: v.optional(v.boolean()),
 		// Present while an invite is available. Cleared when the invite is redeemed.
 		pairingInviteCode: v.optional(v.string()),
@@ -41,8 +39,7 @@ export default defineSchema({
 		),
 		audioStorageId: v.optional(v.id("_storage")),
 		audioDurationMs: v.optional(v.number()),
-		// Snapshot of each user's standingConsent when the session starts. Both
-		// values must be true to create a session.
+		// Snapshot of each user's consent when the session starts.
 		consentTutor: v.boolean(),
 		consentStudent: v.boolean(),
 	})
@@ -51,12 +48,18 @@ export default defineSchema({
 
 	transcriptLines: defineTable({
 		sessionId: v.id("lessonSessions"),
-		speakerId: v.id("users"),
+		// Meet exposes a display name, so resolve the account only on an exact match.
+		speakerId: v.optional(v.id("users")),
+		// Preserve the display name when the account cannot be resolved.
+		speakerLabel: v.optional(v.string()),
 		text: v.string(),
 		startMs: v.number(),
 		endMs: v.number(),
 		order: v.number(),
-	}).index("sessionId", ["sessionId"]),
+	})
+		.index("sessionId", ["sessionId"])
+		// The pair of fields makes retried line uploads idempotent.
+		.index("sessionId_order", ["sessionId", "order"]),
 
 	annotations: defineTable({
 		sessionId: v.id("lessonSessions"),
