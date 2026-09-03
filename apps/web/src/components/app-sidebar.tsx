@@ -25,7 +25,11 @@ export function AppSidebar() {
 	const { signOut } = useAuthActions();
 	const pathname = usePathname();
 
-	const activeId = NAV_ITEMS.find((item) => pathname.startsWith(item.href))?.id;
+	// Longest-prefix match, not array order: /dashboard/settings must win
+	// over /dashboard even though it comes second in NAV_ITEMS.
+	const activeId = NAV_ITEMS.filter((item) => pathname.startsWith(item.href)).sort(
+		(a, b) => b.href.length - a.href.length,
+	)[0]?.id;
 
 	return (
 		<Sidebar
