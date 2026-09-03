@@ -1,4 +1,5 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type QueryCtx } from "./_generated/server";
 
@@ -87,5 +88,35 @@ export const startSession = mutation({
 			consentTutor,
 			consentStudent,
 		});
+	},
+});
+
+/** Ends text capture while the session waits for its audio attachment. */
+export const finishCapture = mutation({
+	args: {
+		sessionId: v.id("lessonSessions"),
+	},
+	handler: async (ctx, args) => {
+		const userId = await getAuthUserId(ctx);
+		if (userId === null) {
+			throw new Error("Not signed in");
+		}
+		const session = await ctx.db.get(args.sessionId);
+		if (session === null) {
+			throw new Error("Lesson session not found");
+		}
+		if (session.tutorId !== userId && session.studentId !== userId) {
+			throw new Error("That lesson session belongs to someone else");
+		}
+		// Retries may reach this mutation after the session already stopped.
+		if (session.status !== "recording") {
+			return session.status;
+		}
+
+		await ctx.db.patch(session._id, {
+			endedAt: Date.now(),
+			status: "processing",
+		});
+		return "processing" as const;
 	},
 });

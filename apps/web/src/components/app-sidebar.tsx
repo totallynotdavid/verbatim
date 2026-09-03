@@ -5,13 +5,19 @@ import { api } from "@verbatim/backend/convex/_generated/api";
 import * as Avatar from "@verbatim/ui/avatar";
 import { Sidebar, type SidebarNavItem } from "@verbatim/ui/sidebar";
 import { useQuery } from "convex/react";
-import { LayoutDashboard, LogOut, Settings } from "lucide-react";
+import { LayoutDashboard, LogOut, Puzzle, Settings } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { Logo } from "@/components/logo";
 
 const NAV_ITEMS: SidebarNavItem[] = [
 	{ id: "dashboard", label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
 	{ id: "settings", label: "Settings", href: "/dashboard/settings", icon: Settings },
+	{
+		id: "extension",
+		label: "Extension",
+		href: "/extension/connect",
+		icon: Puzzle,
+	},
 ];
 
 export function AppSidebar() {

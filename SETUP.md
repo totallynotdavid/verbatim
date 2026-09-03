@@ -110,13 +110,66 @@ Open `http://localhost:3000`.
 5. Visit Settings and toggle "consent to being recorded during lessons" for
    each paired user. Phase 1's recording flow will read this setting.
 
+## 7. Load the capture extension
+
+The extension captures Google Meet's live captions and uploads them as a
+transcript. It is Chrome-only (MV3, `externally_connectable`).
+
+It is built with [WXT](https://wxt.dev), which owns the manifest. There is no
+`manifest.json` in the source tree, only `apps/extension/wxt.config.ts`.
+
+```sh
+cd apps/extension
+bun run build      # or `bun run dev` for WXT's dev server + auto-reload
+```
+
+Then in Chrome: **chrome://extensions → Developer mode → Load unpacked →
+`apps/extension/.output/chrome-mv3`**.
+
+If Meet's Content-Security-Policy interferes with the dev server's reload
+client, use `bun run build` and hit reload in `chrome://extensions` instead.
+
+The extension's ID is pinned to `lekedgolgpdocenlpjgmmcbmgphjmjje` by the
+`key` in `apps/extension/wxt.config.ts`, so it is the same on every machine
+and the website knows where to send the auth token. Confirm Chrome shows that
+ID; if it doesn't, the website's handoff will silently fail.
+
+The build reads the deployment URL from `packages/convex/.env.local`, so
+there is nothing else to configure. Override it with `WXT_CONVEX_URL` (and
+the site origin with `WXT_WEB_ORIGIN`) in the environment if you need to
+point somewhere else.
+
+## What to click through, part two
+
+1. With the website running, open **Extension** in the sidebar
+   (`/extension/connect`). It hands the extension a Convex Auth token and
+   should say "Extension connected".
+2. Join a Google Meet call and turn captions on with the **CC** button. The
+   extension reads the caption panel; it does not do its own speech recognition.
+3. A small "Verbatim" panel appears bottom-right. Click **Start lesson**,
+   talk, then **Stop lesson**.
+4. Check the result with `bunx convex data transcriptLines` from
+   `packages/convex`, or in `bunx convex dashboard`.
+
+The token lasts **one hour**. After that the panel says the sign-in expired
+and its button reopens `/extension/connect`; captured lines stay queued in
+the meantime and upload once you reconnect.
+
 ## Notes for later phases
 
-- `transcriptLines`, `annotations`, and `reviewCards` are defined in
+- `annotations` and `reviewCards` are defined in
   `packages/convex/convex/schema.ts` but have no functions yet. That is
-  intentional scope for this phase, not an oversight.
+  intentional scope, not an oversight. `transcriptLines` gained
+  `transcriptLines.append` in Phase 1a.
+- A lesson stopped by the extension lands in status `"processing"`, not
+  `"ready"`: there is no audio yet. Phase 1b attaches the recording and moves
+  it to `"ready"`.
+- `externally_connectable` in `apps/extension/wxt.config.ts` lists
+  `http://localhost/*` only. A production origin has to be added there, and
+  the extension rebuilt and reloaded, before this works off localhost.
 - `lessonSessions.startSession` (in `packages/convex/convex/lessonSessions.ts`)
-  is the consent-enforcement mutation the brief asked for. It refuses to
-  create a session unless both paired users' *current* standing consent is
-  true, read fresh at call time rather than passed in by the client. Nothing
-  calls it yet. Wiring it to an actual recording trigger is Phase 1.
+  is the consent-enforcement mutation. It refuses to create a session unless
+  both paired users' *current* standing consent is true, read fresh at call
+  time rather than passed in by the client. The extension's "Start lesson"
+  button calls it, so a lesson cannot begin without live consent from both
+  sides.

@@ -11,7 +11,9 @@
 			"types": "./convex/_generated/api.d.ts",
 			"default": "./convex/_generated/api.js"
 		},
-		"./convex/_generated/dataModel": "./convex/_generated/dataModel.ts",
+		"./convex/_generated/dataModel": {
+			"types": "./convex/_generated/dataModel.d.ts"
+		},
 		"./convex/schema": "./convex/schema.ts"
 	},
 	"dependencies": {
