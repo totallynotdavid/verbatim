@@ -1,0 +1,21 @@
+{
+	"name": "@verbatim/extension",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "wxt",
+		"build": "wxt build",
+		"postinstall": "wxt prepare",
+		"typecheck": "wxt prepare && tsc --noEmit"
+	},
+	"dependencies": {
+		"convex": "^1.27.0",
+		"@verbatim/backend": "workspace:*"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.2",
+		"vite": "^7.0.0",
+		"wxt": "^0.21.4"
+	}
+}
