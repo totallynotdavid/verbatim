@@ -112,8 +112,9 @@ Open `http://localhost:3000`.
 
 ## 7. Load the capture extension
 
-The extension captures Google Meet's live captions and uploads them as a
-transcript. It is Chrome-only (MV3, `externally_connectable`).
+The extension captures Google Meet's live captions and, alongside them, one
+mixed audio recording of the call. It is Chrome-only (MV3,
+`externally_connectable`, `tabCapture`, offscreen documents).
 
 It is built with [WXT](https://wxt.dev), which owns the manifest. There is no
 `manifest.json` in the source tree, only `apps/extension/wxt.config.ts`.
@@ -139,6 +140,9 @@ there is nothing else to configure. Override it with `WXT_CONVEX_URL` (and
 the site origin with `WXT_WEB_ORIGIN`) in the environment if you need to
 point somewhere else.
 
+**Pin the extension to the toolbar** (puzzle-piece menu → pin "Verbatim
+Capture"). Audio recording depends on clicking that icon: see below.
+
 ## What to click through, part two
 
 1. With the website running, open **Extension** in the sidebar
@@ -146,10 +150,34 @@ point somewhere else.
    should say "Extension connected".
 2. Join a Google Meet call and turn captions on with the **CC** button. The
    extension reads the caption panel; it does not do its own speech recognition.
-3. A small "Verbatim" panel appears bottom-right. Click **Start lesson**,
-   talk, then **Stop lesson**.
-4. Check the result with `bunx convex data transcriptLines` from
-   `packages/convex`, or in `bunx convex dashboard`.
+   A small "Verbatim" panel appears bottom-right.
+3. In that panel, click **Enable microphone** and allow the prompt in the tab
+   that opens. This is a one-time grant to the extension's own origin. It is a
+   separate page because Chrome does not show microphone prompts in offscreen
+   documents. The recorder runs there, so without the grant the recording
+   contains the other participant but not you.
+4. **Click the Verbatim toolbar icon once, in the Meet tab.** Chrome only
+   allows tab capture on a tab where the user has invoked the extension
+   itself, and a click inside the injected panel does not count. The panel
+   changes from "Click the Verbatim toolbar icon once to allow audio
+   recording" to "Audio ready for the next lesson".
+5. Click **Start lesson**, talk, then **Stop lesson**. While recording, the
+   panel should say "Audio: this call and your microphone" and the toolbar icon
+   carries a red **REC** badge. **You should still hear the call normally.** Tab
+   capture mutes the tab, and the extension routes the captured audio back to
+   your speakers. If the call goes silent when you press Start, that routing is
+   broken; say so.
+6. Check the result with `bunx convex data lessonSessions` and
+   `bunx convex data transcriptLines` from `packages/convex`, or in
+   `bunx convex dashboard`. A finished lesson has `status: "ready"`, an
+   `audioStorageId`, an `audioDurationMs` close to how long you talked, and a
+   small `audioOffsetMs`.
+
+If you forget step 4 and start anyway, the lesson still captures captions and
+says "No audio: click the Verbatim toolbar icon to start recording this
+call". Clicking the icon then starts the recording mid-lesson; the stored
+`audioOffsetMs` accounts for the late start. A lesson that ends with no
+recording at all is closed as `"incomplete"` rather than `"ready"`.
 
 The token lasts **one hour**. After that the panel says the sign-in expired
 and its button reopens `/extension/connect`; captured lines stay queued in
@@ -161,9 +189,22 @@ the meantime and upload once you reconnect.
   `packages/convex/convex/schema.ts` but have no functions yet. That is
   intentional scope, not an oversight. `transcriptLines` gained
   `transcriptLines.append` in Phase 1a.
-- A lesson stopped by the extension lands in status `"processing"`, not
-  `"ready"`: there is no audio yet. Phase 1b attaches the recording and moves
-  it to `"ready"`.
+- Timestamps: `transcriptLines.startMs`/`endMs` and the recording share one
+  origin, the instant the service worker starts the lesson. The recording
+  itself begins a little later, and `lessonSessions.audioOffsetMs` is that
+  gap. To seek the audio to a line, use `startMs - audioOffsetMs`. On this
+  machine the gap measured ~10 ms with a stubbed recorder; in a real browser
+  expect more, and much more when the tab is armed mid-lesson, so read the
+  stored value rather than assuming it is small.
+- Audio is buffered in the offscreen document for the whole lesson and
+  uploaded once on Stop (32 kbps Opus, about 14 MB an hour). If the upload
+  fails, the recording is kept and the panel offers **Retry saving audio**;
+  the session sits in `"processing"` until it lands.
+- The recording is WebM/Opus written by `MediaRecorder`, whose container
+  carries no duration in its header. A player asked to seek it may report an
+  infinite duration until it has read the whole file; Phase 2 should seek
+  using `audioDurationMs` from the session row rather than the file's own
+  metadata.
 - `externally_connectable` in `apps/extension/wxt.config.ts` lists
   `http://localhost/*` only. A production origin has to be added there, and
   the extension rebuilt and reloaded, before this works off localhost.

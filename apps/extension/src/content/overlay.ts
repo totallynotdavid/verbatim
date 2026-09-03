@@ -1,7 +1,5 @@
 import type { CaptureState } from "../shared/protocol";
 
-/** Floating capture control injected into the Meet page. */
-
 const STYLES = `
 :host { all: initial; }
 .panel {
@@ -40,6 +38,28 @@ const STYLES = `
 .detail { color: #9aa0a6; margin-bottom: 10px; }
 .detail.warn { color: #fbbf24; }
 .detail.err { color: #f87171; }
+.audio {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	color: #9aa0a6;
+	margin-bottom: 10px;
+	font-size: 12px;
+}
+.audio.warn { color: #fbbf24; }
+.audio.err { color: #f87171; }
+button.link {
+	width: auto;
+	padding: 0;
+	margin-top: -2px;
+	border: 0;
+	background: none;
+	color: #93c5fd;
+	font-size: 12px;
+	font-weight: 600;
+	text-decoration: underline;
+}
+button.link:hover { background: none; color: #bfdbfe; }
 button {
 	width: 100%;
 	padding: 7px 10px;
@@ -61,6 +81,7 @@ export type OverlayActions = {
 	onStart: () => void;
 	onStop: () => void;
 	onConnect: () => void;
+	onEnableMic: () => void;
 };
 
 export class Overlay {
@@ -68,6 +89,9 @@ export class Overlay {
 	private readonly shadow: ShadowRoot;
 	private readonly dot: HTMLElement;
 	private readonly detail: HTMLElement;
+	private readonly audio: HTMLElement;
+	private readonly audioText: HTMLElement;
+	private readonly micButton: HTMLButtonElement;
 	private readonly button: HTMLButtonElement;
 	private readonly actions: OverlayActions;
 	private state: CaptureState | null = null;
@@ -96,10 +120,20 @@ export class Overlay {
 		this.detail = document.createElement("div");
 		this.detail.className = "detail";
 
+		this.audio = document.createElement("div");
+		this.audio.className = "audio";
+		this.audioText = document.createElement("span");
+		this.micButton = document.createElement("button");
+		this.micButton.className = "link";
+		this.micButton.textContent = "Enable microphone";
+		this.micButton.hidden = true;
+		this.micButton.addEventListener("click", () => this.actions.onEnableMic());
+		this.audio.append(this.audioText, this.micButton);
+
 		this.button = document.createElement("button");
 		this.button.addEventListener("click", () => this.onClick());
 
-		panel.append(title, this.detail, this.button);
+		panel.append(title, this.detail, this.audio, this.button);
 		this.shadow.append(style, panel);
 	}
 
@@ -117,7 +151,22 @@ export class Overlay {
 		this.state = state;
 		this.dot.className = state.status === "recording" ? "dot live" : "dot";
 		this.renderDetail(state);
+		this.renderAudio(state);
 		this.renderButton(state);
+	}
+
+	private renderAudio(state: CaptureState): void {
+		if (state.auth !== "connected") {
+			this.audio.hidden = true;
+			return;
+		}
+		this.audio.hidden = false;
+		const { text, tone } = audioNote(state);
+		this.audio.className = tone === "" ? "audio" : `audio ${tone}`;
+		this.audioText.textContent = text;
+		// Chrome prompts from an extension page, not the injected overlay.
+		this.micButton.hidden =
+			state.audio.mic === "granted" || state.status === "stopping";
 	}
 
 	private renderDetail(state: CaptureState): void {
@@ -155,6 +204,12 @@ export class Overlay {
 		const recording = state.status === "recording";
 		this.button.disabled = false;
 		this.button.className = "";
+		if (needsStop(state)) {
+			this.button.textContent = isRetryableUpload(state)
+				? "Retry saving audio"
+				: "Finish lesson";
+			return;
+		}
 		if (state.auth !== "connected") {
 			this.button.textContent =
 				state.auth === "expired" ? "Reconnect" : "Connect account";
@@ -181,7 +236,7 @@ export class Overlay {
 			this.actions.onConnect();
 			return;
 		}
-		if (state.status === "recording") {
+		if (state.status === "recording" || needsStop(state)) {
 			this.actions.onStop();
 			return;
 		}
@@ -189,4 +244,60 @@ export class Overlay {
 			this.actions.onStart();
 		}
 	}
+}
+
+function needsStop(state: CaptureState): boolean {
+	return state.status === "error" && state.sessionId !== null;
+}
+
+function isRetryableUpload(state: CaptureState): boolean {
+	return needsStop(state) && state.audio.status === "recorded";
+}
+
+function formatDuration(ms: number): string {
+	const total = Math.round(ms / 1000);
+	const minutes = Math.floor(total / 60);
+	return `${minutes}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function audioNote(state: CaptureState): {
+	text: string;
+	tone: "" | "warn" | "err";
+} {
+	const audioState = state.audio;
+	if (audioState.status === "failed") {
+		return { text: audioState.error ?? "Audio capture failed.", tone: "err" };
+	}
+	if (audioState.status === "uploading") {
+		return { text: "Saving audio…", tone: "" };
+	}
+	if (audioState.status === "recording") {
+		return audioState.micIncluded
+			? { text: "Audio: this call and your microphone.", tone: "" }
+			: {
+					text: "Audio: this call only. Your own voice is not being recorded.",
+					tone: "warn",
+				};
+	}
+	if (state.status === "recording" || state.status === "starting") {
+		return {
+			text: "No audio: click the Verbatim toolbar icon to start recording this call.",
+			tone: "warn",
+		};
+	}
+	if (audioState.status === "recorded") {
+		return { text: "Audio recorded, not saved yet.", tone: "warn" };
+	}
+	if (audioState.status === "saved" && audioState.durationMs !== null) {
+		return {
+			text: `Audio saved (${formatDuration(audioState.durationMs)}).`,
+			tone: "",
+		};
+	}
+	return audioState.armed
+		? { text: "Audio ready for the next lesson.", tone: "" }
+		: {
+				text: "Click the Verbatim toolbar icon once to allow audio recording.",
+				tone: "warn",
+			};
 }

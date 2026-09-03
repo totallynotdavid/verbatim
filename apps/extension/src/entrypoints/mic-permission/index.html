@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Verbatim microphone access</title>
+		<style>
+			body {
+				margin: 0;
+				padding: 40px 24px;
+				background: #16181d;
+				color: #e8eaed;
+				font: 15px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+			}
+			main { max-width: 34rem; margin: 0 auto; }
+			h1 { font-size: 1.3rem; margin: 0 0 12px; }
+			p { color: #9aa0a6; }
+			#status { color: #e8eaed; font-weight: 600; }
+			#status.err { color: #f87171; }
+		</style>
+	</head>
+	<body>
+		<main>
+			<h1>Let Verbatim record your microphone</h1>
+			<p>
+				Chrome is asking for microphone access. Verbatim needs it so your own
+				voice is in the lesson recording alongside the other participant, whose
+				audio comes from the Meet tab. This tab closes itself once you allow it.
+			</p>
+			<p id="status">Waiting for the microphone prompt…</p>
+		</main>
+		<script type="module" src="./main.ts"></script>
+	</body>
+</html>
