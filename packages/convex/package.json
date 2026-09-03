@@ -1,0 +1,26 @@
+{
+	"name": "@verbatim/backend",
+	"version": "0.0.0",
+	"private": true,
+	"scripts": {
+		"dev": "convex dev",
+		"typecheck": "tsc --noEmit"
+	},
+	"exports": {
+		"./convex/_generated/api": {
+			"types": "./convex/_generated/api.d.ts",
+			"default": "./convex/_generated/api.js"
+		},
+		"./convex/_generated/dataModel": "./convex/_generated/dataModel.ts",
+		"./convex/schema": "./convex/schema.ts"
+	},
+	"dependencies": {
+		"@auth/core": "0.37.4",
+		"@convex-dev/auth": "^0.0.90",
+		"convex": "^1.27.0"
+	},
+	"devDependencies": {
+		"@types/node": "^24.0.0",
+		"typescript": "^5.9.2"
+	}
+}

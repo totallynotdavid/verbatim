@@ -1,0 +1,6 @@
+@import "@verbatim/ui/globals.css";
+
+body {
+	background: var(--bg-weak-50);
+	color: var(--text-strong-950);
+}
