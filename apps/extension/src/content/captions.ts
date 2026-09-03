@@ -36,16 +36,16 @@ type Draft = {
 	lastChangedMs: number;
 	/**
 	 * Text already emitted for this row. Set when a row settles but stays on
-	 * screen; anything Meet appends afterwards is emitted as a separate line.
+	 * screen. Anything Meet appends afterwards is emitted as a separate line.
 	 */
 	emitted: string;
 };
 
 export type CaptionCaptureOptions = {
 	onLine: (line: FinalizedLine) => void;
-	/** Injectable for tests; defaults to `Date.now`. */
+	/** Injectable for tests. Defaults to `Date.now`. */
 	now?: () => number;
-	/** Injectable for tests; defaults to `document`. */
+	/** Injectable for tests. Defaults to `document`. */
 	root?: Document | Element;
 	settleMs?: number;
 };
@@ -72,9 +72,10 @@ export class CaptionCapture {
 		this.settleMs = options.settleMs ?? SETTLE_MS;
 	}
 
-	start(): void {
+	/** @param startedAtMs Epoch timestamp shared by transcript and audio. */
+	start(startedAtMs?: number): void {
 		if (this.observer !== null) return;
-		this.startedAtMs = this.now();
+		this.startedAtMs = startedAtMs ?? this.now();
 		this.order = 0;
 		this.drafts.clear();
 		this.recent = [];
@@ -228,7 +229,7 @@ export class CaptionCapture {
 export function findRows(region: Element): Element[] {
 	const byClass = [...region.querySelectorAll(`.${ROW_CLASS}`)];
 	if (byClass.length > 0) {
-		return byClass.filter((row) => !isChrome(row));
+		return byClass.filter((row) => !isMeetControl(row));
 	}
 
 	// Avatar-backed rows are the fallback because Meet's controls have no avatar.
@@ -238,7 +239,7 @@ export function findRows(region: Element): Element[] {
 		while (row !== null && row !== region && row.children.length < 2) {
 			row = row.parentElement;
 		}
-		if (row === null || row === region || isChrome(row)) continue;
+		if (row === null || row === region || isMeetControl(row)) continue;
 		if ((row.textContent ?? "").trim().length < 2) continue;
 		if (!rows.includes(row)) rows.push(row);
 	}
@@ -246,7 +247,7 @@ export function findRows(region: Element): Element[] {
 }
 
 /** Excludes Meet controls that live inside the captions region. */
-function isChrome(el: Element): boolean {
+function isMeetControl(el: Element): boolean {
 	if (el.matches('button, [role="button"], [role="toolbar"], [role="menu"]')) {
 		return true;
 	}
@@ -267,7 +268,7 @@ export function extractSpeaker(row: Element): string | undefined {
 		return name === "" ? undefined : name;
 	}
 
-	// Otherwise treat a short first child as the speaker name.
+	// Fall back to a short first child.
 	for (const child of row.children) {
 		const text = (child.textContent ?? "").trim();
 		if (text === "") continue;
@@ -293,7 +294,7 @@ export function extractText(row: Element): string {
 			.trim();
 	}
 
-	// Otherwise use the row text after removing the speaker name.
+	// Fall back to row text without the speaker.
 	const speaker = extractSpeaker(row);
 	let text = (row.textContent ?? "").replace(/\s+/g, " ").trim();
 	if (speaker !== undefined && text.startsWith(speaker)) {

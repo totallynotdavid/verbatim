@@ -10,6 +10,8 @@ import type {
 	ExternalResponse,
 	FinalizedLine,
 } from "../shared/protocol";
+import { IDLE_AUDIO } from "../shared/protocol";
+import * as audio from "./audio";
 import {
 	authStatus,
 	expireAuth,
@@ -38,7 +40,10 @@ function createConvexClient(auth: StoredAuth): ConvexHttpClient {
 	return convex;
 }
 
-async function toState(record: CaptureRecord): Promise<CaptureState> {
+async function toState(
+	record: CaptureRecord,
+	tabId: number | null = null,
+): Promise<CaptureState> {
 	const auth = await loadAuth();
 	return {
 		status: record.status,
@@ -48,28 +53,56 @@ async function toState(record: CaptureRecord): Promise<CaptureState> {
 		pending: record.buffer.length,
 		error: record.error,
 		account: auth?.account ?? null,
+		captureStartedAtMs: record.captureStartedAtMs,
+		audio: {
+			...record.audio,
+			// Arming is tab-scoped, so read it for the target tab.
+			armed: await audio.isArmed(record.tabId ?? tabId),
+		},
 	};
 }
 
-/** Pushes state to every Meet tab so overlays stay in sync. */
 async function broadcast(record: CaptureRecord): Promise<void> {
-	const state = await toState(record);
 	const tabs = await browser.tabs.query({ url: "https://meet.google.com/*" });
 	for (const tab of tabs) {
 		if (tab.id === undefined) continue;
+		const state = await toState(record, tab.id);
 		browser.tabs.sendMessage(tab.id, { type: "capture:state", state }, () => {
-			// Tabs without the content script loaded yet will not answer.
+			// Ignore tabs without the content script.
 			void browser.runtime.lastError;
 		});
 	}
+	await updateRecordingBadge(record.status);
+}
+
+/** Reflects capture status in the toolbar. */
+async function updateRecordingBadge(status: CaptureState["status"]): Promise<void> {
+	try {
+		const recording = status === "recording";
+		await browser.action.setBadgeText({ text: recording ? "REC" : "" });
+		if (recording) {
+			await browser.action.setBadgeBackgroundColor({ color: "#b91c1c" });
+		}
+	} catch {
+		// Badge updates are best effort.
+	}
+}
+
+/** Applies a change to the latest stored record. */
+async function patchRecord(
+	change: (record: CaptureRecord) => CaptureRecord,
+): Promise<CaptureRecord> {
+	const next = change(await loadRecord());
+	await saveRecord(next);
+	return next;
 }
 
 function startFlushLoop(): void {
 	if (flushTimer === null) {
 		flushTimer = setInterval(() => void flush(), FLUSH_INTERVAL_MS);
 	}
-	// The interval handles frequent uploads while the worker is alive; the alarm
-	// revives it after suspension.
+		// The interval uploads while the worker is alive. The alarm revives it after
+		// suspension.
 	void browser.alarms.create(FLUSH_ALARM, { periodInMinutes: 0.5 });
 }
 
@@ -140,7 +173,7 @@ function errorMessage(error: unknown): string {
 	return (thrown ?? text.split("\n")[0] ?? text).trim().slice(0, 200);
 }
 
-async function startLesson(): Promise<CaptureRecord> {
+async function startLesson(tabId: number | null): Promise<CaptureRecord> {
 	const current = await loadRecord();
 	if (current.status === "recording" || current.status === "starting") {
 		return current;
@@ -165,6 +198,8 @@ async function startLesson(): Promise<CaptureRecord> {
 			api.lessonSessions.startSession,
 			{},
 		);
+		// Use one clock origin for captions and audio.
+		const captureStartedAtMs = Date.now();
 		const next: CaptureRecord = {
 			status: "recording",
 			sessionId,
@@ -172,9 +207,14 @@ async function startLesson(): Promise<CaptureRecord> {
 			buffer: [],
 			nextOrder: 0,
 			error: null,
+			captureStartedAtMs,
+			tabId,
+			audio: { ...IDLE_AUDIO, status: "unarmed" },
 		};
 		await saveRecord(next);
 		startFlushLoop();
+		// Start audio in parallel. Startup delay is stored as its offset.
+		void beginAudio().then(async () => broadcast(await loadRecord()));
 		return next;
 	} catch (error) {
 		const authFailure = isAuthFailure(error);
@@ -188,6 +228,66 @@ async function startLesson(): Promise<CaptureRecord> {
 		};
 		await saveRecord(next);
 		return next;
+	}
+}
+
+/** Starts audio when the lesson's tab has a capture grant. */
+async function beginAudio(): Promise<void> {
+	const record = await loadRecord();
+	if (record.status !== "recording" || record.tabId === null) return;
+	if (record.audio.status === "recording") return;
+
+	// Permission lookup may create the offscreen document, so close it when the
+	// tab is not armed.
+	const mic = await audio.readMicPermission();
+	if (!(await audio.isArmed(record.tabId))) {
+		await audio.closeOffscreen();
+		await patchRecord((r) => ({
+			...r,
+			audio: { ...r.audio, status: "unarmed", armed: false, mic, error: null },
+		}));
+		return;
+	}
+
+	try {
+		const streamId = await audio.getStreamId(record.tabId);
+		const started = await audio.startAudio(streamId);
+		// Do not leave a recorder running after a concurrent stop.
+		const settled = await loadRecord();
+		if (settled.sessionId !== record.sessionId || settled.status !== "recording") {
+			try {
+				await audio.stopAudio();
+				await audio.discardAudio();
+			} finally {
+				await audio.closeOffscreen();
+			}
+			return;
+		}
+		await patchRecord((r) => ({
+			...r,
+			audio: {
+				status: "recording",
+				armed: true,
+				mic: started.mic,
+				micIncluded: started.micIncluded,
+				durationMs: null,
+				// Audio starts after the shared caption clock.
+				offsetMs: started.startedAtMs - (r.captureStartedAtMs ?? started.startedAtMs),
+				error: started.micIncluded
+					? null
+					: "Recording the call, but not your own microphone.",
+			},
+		}));
+	} catch (error) {
+		await patchRecord((r) => ({
+			...r,
+			audio: {
+				...r.audio,
+				status: "failed",
+				mic,
+				error: `Audio capture failed: ${errorMessage(error)}`,
+			},
+		}));
 	}
 }
 
@@ -209,7 +309,8 @@ async function stopLesson(): Promise<CaptureRecord> {
 	const auth = await loadAuth();
 	const authConnected = auth !== null && authStatus(auth, Date.now()) === "connected";
 
-	// Keep the session open until every buffered line is saved.
+	// Keep the session open until buffered lines are saved. Audio continues with
+	// the lesson.
 	if (!authConnected || afterFlush.buffer.length > 0) {
 		const next: CaptureRecord = {
 			...afterFlush,
@@ -222,9 +323,11 @@ async function stopLesson(): Promise<CaptureRecord> {
 		return next;
 	}
 
+	const stopped = await endAudioRecording(afterFlush);
+
 	try {
 		await createConvexClient(auth).mutation(api.lessonSessions.finishCapture, {
-			sessionId: afterFlush.sessionId as Id<"lessonSessions">,
+			sessionId: stopped.sessionId as Id<"lessonSessions">,
 		});
 	} catch (error) {
 		const authFailure = isAuthFailure(error);
@@ -232,7 +335,7 @@ async function stopLesson(): Promise<CaptureRecord> {
 			await expireAuth();
 		}
 		const next: CaptureRecord = {
-			...afterFlush,
+			...stopped,
 			status: "recording",
 			error: `Could not close the lesson: ${errorMessage(error)}`,
 		};
@@ -240,16 +343,130 @@ async function stopLesson(): Promise<CaptureRecord> {
 		return next;
 	}
 
+	return finalizeAudio(await loadRecord(), auth);
+}
+
+/** Stops audio and stores its duration. */
+async function endAudioRecording(record: CaptureRecord): Promise<CaptureRecord> {
+	if (record.audio.status !== "recording") return record;
+	try {
+		const stopped = await audio.stopAudio();
+		console.info("[verbatim] audio captured", {
+			durationMs: stopped.durationMs,
+			wallClockMs: stopped.wallClockMs,
+			driftMs: stopped.wallClockMs - stopped.durationMs,
+			offsetMs: record.audio.offsetMs,
+			sizeBytes: stopped.sizeBytes,
+			mimeType: stopped.mimeType,
+		});
+		return patchRecord((r) => ({
+			...r,
+			audio: {
+				...r.audio,
+				status: "recorded",
+				durationMs: stopped.durationMs,
+				error: null,
+			},
+		}));
+	} catch (error) {
+		return patchRecord((r) => ({
+			...r,
+			audio: {
+				...r.audio,
+				status: "failed",
+				error: `Recording could not be closed: ${errorMessage(error)}`,
+			},
+		}));
+	}
+}
+
+/** Uploads audio, or closes the session as incomplete when no audio exists. */
+async function finalizeAudio(
+	record: CaptureRecord,
+	auth: StoredAuth,
+): Promise<CaptureRecord> {
+	const sessionId = record.sessionId as Id<"lessonSessions">;
+	const convex = createConvexClient(auth);
+	const recorded =
+		record.audio.status === "recorded" || record.audio.status === "uploading";
+
+	if (!recorded) {
+		try {
+			await convex.mutation(api.lessonSessions.finishWithoutAudio, { sessionId });
+		} catch (error) {
+			return patchRecord((r) => ({
+				...r,
+				status: "error",
+				error: `Could not close the lesson: ${errorMessage(error)}`,
+			}));
+		}
+		return resetAfterStop(record);
+	}
+
+	await patchRecord((r) => ({
+		...r,
+		audio: { ...r.audio, status: "uploading", error: null },
+	}));
+
+	try {
+		const uploadUrl = await convex.mutation(
+			api.lessonSessions.generateAudioUploadUrl,
+			{ sessionId },
+		);
+		const uploaded = await audio.uploadAudio(uploadUrl);
+		await convex.mutation(api.lessonSessions.attachAudio, {
+			sessionId,
+			storageId: uploaded.storageId as Id<"_storage">,
+			durationMs: record.audio.durationMs ?? 0,
+			offsetMs: record.audio.offsetMs ?? 0,
+		});
+		await audio.discardAudio();
+	} catch (error) {
+		if (isAuthFailure(error)) {
+			await expireAuth();
+		}
+		const message = errorMessage(error);
+		// A lost offscreen blob cannot be recovered by retrying.
+		const lost = message.includes("No recording to upload");
+		return patchRecord((r) => ({
+			...r,
+			status: "error",
+			error: lost
+				? "The recording was lost before it could be uploaded. Press Stop to close the lesson with its transcript only."
+				: `Audio upload failed: ${message}. Press Retry to send it again.`,
+			audio: {
+				...r.audio,
+				status: lost ? "failed" : "recorded",
+				error: null,
+			},
+		}));
+	}
+
+	return resetAfterStop(record);
+}
+
+/** Returns to idle while retaining the last audio summary. */
+async function resetAfterStop(record: CaptureRecord): Promise<CaptureRecord> {
 	stopFlushLoop();
-	const next: CaptureRecord = {
-		...afterFlush,
+	await audio.closeOffscreen();
+	// The tab keeps its capture grant until navigation, so the next lesson can
+	// start audio immediately.
+	return patchRecord((r) => ({
+		...r,
 		status: "idle",
 		sessionId: null,
 		buffer: [],
 		error: null,
-	};
-	await saveRecord(next);
-	return next;
+		captureStartedAtMs: null,
+		tabId: null,
+		audio: {
+			...IDLE_AUDIO,
+			status: record.audio.durationMs === null ? "off" : "saved",
+			durationMs: record.audio.durationMs,
+			offsetMs: record.audio.offsetMs,
+			mic: record.audio.mic,
+		},
+	}));
 }
 
 async function bufferLines(lines: FinalizedLine[]): Promise<CaptureRecord> {
@@ -270,37 +487,62 @@ async function bufferLines(lines: FinalizedLine[]): Promise<CaptureRecord> {
 	return next;
 }
 
+type BackgroundTargetMessage = { target: "background"; type: "audio:micGranted" };
+
+function isMeetUrl(url: string | undefined): boolean {
+	return url !== undefined && url.startsWith("https://meet.google.com/");
+}
+
 export function registerBackground(): void {
 	browser.runtime.onMessage.addListener(
-		(message: ContentMessage, _sender, sendResponse) => {
+		(message: ContentMessage | BackgroundTargetMessage, sender, sendResponse) => {
+			// Ignore requests owned by the offscreen listener.
+			if ("target" in message && message.target !== "background") return false;
+
+			const tabId = sender.tab?.id ?? null;
 			void (async () => {
+				if ("target" in message) {
+					// The permission page reports a successful grant.
+					const record = await patchRecord((r) => ({
+						...r,
+						audio: { ...r.audio, mic: "granted" },
+					}));
+					await broadcast(record);
+					sendResponse({ ok: true });
+					return;
+				}
 				switch (message.type) {
 					case "capture:getState": {
 						const record = await loadRecord();
 						if (record.status === "recording") startFlushLoop();
-						sendResponse(await toState(record));
+						sendResponse(await toState(record, tabId));
 						return;
 					}
 					case "capture:start": {
-						const record = await startLesson();
-						sendResponse(await toState(record));
+						const record = await startLesson(tabId);
+						sendResponse(await toState(record, tabId));
 						await broadcast(record);
 						return;
 					}
 					case "capture:stop": {
 						const record = await stopLesson();
-						sendResponse(await toState(record));
+						sendResponse(await toState(record, tabId));
 						await broadcast(record);
 						return;
 					}
 					case "capture:lines": {
 						const record = await bufferLines(message.lines);
-						sendResponse(await toState(record));
+						sendResponse(await toState(record, tabId));
 						return;
 					}
 					case "capture:connect": {
 						await browser.tabs.create({ url: CONNECT_URL });
-						sendResponse(await toState(await loadRecord()));
+						sendResponse(await toState(await loadRecord(), tabId));
+						return;
+					}
+					case "capture:enableMic": {
+						await audio.openMicPermissionPage();
+						sendResponse(await toState(await loadRecord(), tabId));
 						return;
 					}
 				}
@@ -309,6 +551,29 @@ export function registerBackground(): void {
 			return true;
 		},
 	);
+
+	// Toolbar invocation grants tab capture and may start audio mid-lesson.
+	browser.action.onClicked.addListener((tab) => {
+		void (async () => {
+			if (tab.id === undefined || !isMeetUrl(tab.url)) return;
+			await audio.markArmed(tab.id);
+			const record = await loadRecord();
+			if (record.status === "recording" && record.audio.status !== "recording") {
+				await beginAudio();
+			}
+			await broadcast(await loadRecord());
+		})();
+	});
+
+	// Navigation revokes tab-capture grants.
+	browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+		if (changeInfo.status === "loading" && changeInfo.url !== undefined) {
+			void audio.clearArmed(tabId);
+		}
+	});
+	browser.tabs.onRemoved.addListener((tabId) => {
+		void audio.clearArmed(tabId);
+	});
 
 	/** Receives tokens from origins allowed by Chrome's external messaging rules. */
 	browser.runtime.onMessageExternal.addListener(
@@ -367,7 +632,21 @@ export function registerBackground(): void {
 	});
 
 	// Restore flushing if the worker restarted during a lesson.
-	void loadRecord().then((record) => {
-		if (record.status === "recording") startFlushLoop();
+	void loadRecord().then(async (record) => {
+		if (record.status !== "recording") return;
+		startFlushLoop();
+		await updateRecordingBadge(record.status);
+		// A worker restart also loses the offscreen recording.
+		if (record.audio.status === "recording" && !(await audio.hasOffscreen())) {
+			await patchRecord((r) => ({
+				...r,
+				audio: {
+					...r.audio,
+					status: "failed",
+					error: "Audio recording stopped when the extension restarted.",
+				},
+			}));
+			await broadcast(await loadRecord());
+		}
 	});
 }

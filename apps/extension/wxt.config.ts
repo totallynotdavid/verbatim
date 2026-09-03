@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { defineConfig } from "wxt";
 
-/** WXT provides the MV3 build and offscreen-document support needed for audio. */
+/** Provides the MV3 build and offscreen-document support. */
 
 /** The public key keeps the unpacked extension ID stable for the web handoff. */
 const EXTENSION_KEY =
@@ -27,20 +27,28 @@ export default defineConfig({
 	manifest: {
 		name: "Verbatim Capture",
 		description:
-			"Captures Google Meet captions into a Verbatim lesson transcript.",
+			"Captures Google Meet captions and call audio into a Verbatim lesson.",
 		key: EXTENSION_KEY,
 		permissions: [
-			// Stores the auth token and in-flight capture state.
+			// Stores auth and in-flight capture state.
 			"storage",
-			// Sends state to Meet tabs and opens the connect page.
+			// Sends state and opens the connect page.
 			"tabs",
 			// Revives the service worker so buffered lines keep flushing.
 			"alarms",
+			// MediaRecorder and blobs need a document.
+			"offscreen",
+			// Captures audio from a tab after the user invokes the extension.
+			"tabCapture",
 		],
 		host_permissions: [
-			// The service worker calls Convex mutations directly.
+			// The service worker calls Convex directly.
 			"https://*.convex.cloud/*",
 		],
+		// Toolbar invocation grants tab capture. Overlay clicks do not.
+		action: {
+			default_title: "Verbatim - allow audio recording for this call",
+		},
 		// Add the production origin here before shipping.
 		externally_connectable: {
 			matches: ["http://localhost/*"],

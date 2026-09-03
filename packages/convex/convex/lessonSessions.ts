@@ -1,6 +1,6 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query, type QueryCtx } from "./_generated/server";
 
 async function requirePairedUser(ctx: QueryCtx): Promise<{
@@ -23,6 +23,25 @@ async function requirePairedUser(ctx: QueryCtx): Promise<{
 		throw new Error("Paired user no longer exists");
 	}
 	return { user, partner };
+}
+
+/** Enforces ownership before a session is read or changed. */
+async function requireOwnSession(
+	ctx: QueryCtx,
+	sessionId: Id<"lessonSessions">,
+): Promise<Doc<"lessonSessions">> {
+	const userId = await getAuthUserId(ctx);
+	if (userId === null) {
+		throw new Error("Not signed in");
+	}
+	const session = await ctx.db.get(sessionId);
+	if (session === null) {
+		throw new Error("Lesson session not found");
+	}
+	if (session.tutorId !== userId && session.studentId !== userId) {
+		throw new Error("That lesson session belongs to someone else");
+	}
+	return session;
 }
 
 /** Returns the current user's sessions, most recent first. */
@@ -91,24 +110,14 @@ export const startSession = mutation({
 	},
 });
 
-/** Ends text capture while the session waits for its audio attachment. */
+/** Moves text capture to processing while audio is attached. */
 export const finishCapture = mutation({
 	args: {
 		sessionId: v.id("lessonSessions"),
 	},
 	handler: async (ctx, args) => {
-		const userId = await getAuthUserId(ctx);
-		if (userId === null) {
-			throw new Error("Not signed in");
-		}
-		const session = await ctx.db.get(args.sessionId);
-		if (session === null) {
-			throw new Error("Lesson session not found");
-		}
-		if (session.tutorId !== userId && session.studentId !== userId) {
-			throw new Error("That lesson session belongs to someone else");
-		}
-		// Retries may reach this mutation after the session already stopped.
+		const session = await requireOwnSession(ctx, args.sessionId);
+		// Make repeated stops idempotent.
 		if (session.status !== "recording") {
 			return session.status;
 		}
@@ -118,5 +127,74 @@ export const finishCapture = mutation({
 			status: "processing",
 		});
 		return "processing" as const;
+	},
+});
+
+/** Creates a short-lived upload URL for one recording attempt. */
+export const generateAudioUploadUrl = mutation({
+	args: {
+		sessionId: v.id("lessonSessions"),
+	},
+	handler: async (ctx, args) => {
+		await requireOwnSession(ctx, args.sessionId);
+		return ctx.storage.generateUploadUrl();
+	},
+});
+
+/** Attaches audio and marks the session ready. */
+export const attachAudio = mutation({
+	args: {
+		sessionId: v.id("lessonSessions"),
+		storageId: v.id("_storage"),
+		durationMs: v.number(),
+		offsetMs: v.number(),
+	},
+	handler: async (ctx, args) => {
+		const session = await requireOwnSession(ctx, args.sessionId);
+		if (session.status === "recording") {
+			throw new Error(
+				"Lesson session is still recording; finish capture before attaching audio",
+			);
+		}
+
+		// Remove the previous upload when a retry replaces it.
+		if (
+			session.audioStorageId !== undefined &&
+			session.audioStorageId !== args.storageId
+		) {
+			await ctx.storage.delete(session.audioStorageId);
+		}
+
+		await ctx.db.patch(session._id, {
+			audioStorageId: args.storageId,
+			audioDurationMs: args.durationMs,
+			audioOffsetMs: args.offsetMs,
+			endedAt: session.endedAt ?? Date.now(),
+			status: "ready",
+		});
+		return "ready" as const;
+	},
+});
+
+/** Closes a session whose transcript has no recording. */
+export const finishWithoutAudio = mutation({
+	args: {
+		sessionId: v.id("lessonSessions"),
+	},
+	handler: async (ctx, args) => {
+		const session = await requireOwnSession(ctx, args.sessionId);
+		if (session.status === "recording") {
+			throw new Error(
+				"Lesson session is still recording; finish capture first",
+			);
+		}
+		if (session.status === "ready") {
+			return session.status;
+		}
+		await ctx.db.patch(session._id, {
+			endedAt: session.endedAt ?? Date.now(),
+			status: "incomplete",
+		});
+		return "incomplete" as const;
 	},
 });

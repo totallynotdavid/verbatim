@@ -39,6 +39,9 @@ export default defineSchema({
 		),
 		audioStorageId: v.optional(v.id("_storage")),
 		audioDurationMs: v.optional(v.number()),
+		// Delay from the session clock's origin to the first audio sample. Seek a
+		// line at startMs with startMs - audioOffsetMs.
+		audioOffsetMs: v.optional(v.number()),
 		// Snapshot of each user's consent when the session starts.
 		consentTutor: v.boolean(),
 		consentStudent: v.boolean(),

@@ -36,6 +36,8 @@ export default defineContentScript({
 			onStart: () => void send({ type: "capture:start" }).then(applyState),
 			onStop: () => void send({ type: "capture:stop" }).then(applyState),
 			onConnect: () => void send({ type: "capture:connect" }),
+			onEnableMic: () =>
+				void send({ type: "capture:enableMic" }).then(applyState),
 		});
 
 		let capturing = false;
@@ -46,7 +48,7 @@ export default defineContentScript({
 
 			const shouldCapture = state.status === "recording";
 			if (shouldCapture && !capturing) {
-				capture.start();
+				capture.start(state.captureStartedAtMs ?? undefined);
 				capturing = true;
 				if (!capture.captionsFound) {
 					console.warn(

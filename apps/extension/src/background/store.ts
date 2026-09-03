@@ -1,5 +1,5 @@
 import { browser } from "wxt/browser";
-import type { FinalizedLine } from "../shared/protocol";
+import { IDLE_AUDIO, type AudioState, type FinalizedLine } from "../shared/protocol";
 
 /** Keeps buffered capture state available when an MV3 worker restarts. */
 
@@ -15,6 +15,11 @@ export type CaptureRecord = {
 	/** Next line order, persisted so a page reload cannot restart numbering. */
 	nextOrder: number;
 	error: string | null;
+	/** Epoch timestamp shared by transcript and audio. */
+	captureStartedAtMs: number | null;
+	/** Meet tab captured for this lesson. */
+	tabId: number | null;
+	audio: AudioState;
 };
 
 export const EMPTY_RECORD: CaptureRecord = {
@@ -24,6 +29,9 @@ export const EMPTY_RECORD: CaptureRecord = {
 	buffer: [],
 	nextOrder: 0,
 	error: null,
+	captureStartedAtMs: null,
+	tabId: null,
+	audio: IDLE_AUDIO,
 };
 
 export async function loadRecord(): Promise<CaptureRecord> {
