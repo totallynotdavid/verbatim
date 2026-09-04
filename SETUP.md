@@ -463,6 +463,117 @@ path that goes through the real mutations. The words-per-minute and filler
 charts therefore show several bars sharing a date label. The seeding scripts
 themselves are not in the repo — throwaway, like Phase 2's.
 
+## What to click through, part five: the interview coaching layer
+
+Phase 4 adds one route and a sidebar entry — **Questions**
+(`/dashboard/questions`) — plus a third tab on the lesson review screen.
+Nothing here needs the extension, and nothing here touches a microphone.
+
+1. Open **Questions**. This is the bank of prompts asked in the
+   mock-interview half of a lesson. As the tutor you get **New question**: a
+   topic (algorithms / system design / behavioural / fundamentals), a
+   difficulty, the prompt as you would say it out loud, and comma-separated
+   tags. As the student the same list renders read-only — the controls are
+   simply absent, and the backend refuses the write regardless.
+2. Each row shows how many lesson segments cite it. Deleting a question that
+   a lesson still cites is refused, by name and count: untag the segment
+   first. A question nothing cites deletes immediately.
+3. Open a lesson and stay on **Transcript**. As the tutor, **drag across two
+   or more lines** — the tutor's question and the answer that follows it.
+   A bar appears under the transcript: *"n lines selected · Tag as interview
+   answer"*.
+4. **Tag as interview answer** opens the bank, filterable by wording, topic
+   or tag. Pick one and the range is tagged. The transcript grows a chip
+   where the segment starts, the lines inside it carry a warmer ring, and the
+   **Interview** tab's count goes up.
+5. Ranges may not overlap: one run of lines answers one question. A second
+   tag that crosses an existing segment is refused rather than silently
+   nested.
+6. Open **Interview**. Each tagged segment shows the question, how many
+   lines it covers and where it starts (click it to jump back to the
+   transcript and hear the first line), and its rubric feedback.
+7. **Add feedback** opens the four dimensions the brief names — answer
+   structure, concise framing, trade-off discussion, technical vocabulary.
+   Each takes a rating (Strong / Developing / Needs work — click the selected
+   one again to clear it) and a short note. Any dimension can be left blank;
+   at least one has to say something.
+8. The pencil on a segment retags it against a different question; the bin
+   untags it and takes its rubric with it. The student sees every tagged
+   segment and all four dimensions, read-only.
+
+### Why this is three new tables and not a sixth annotation type
+
+`annotations.type` has had `interview-structure` and `technical` literals
+since Phase 0, and reusing them for this would have been less work. It would
+also have been wrong, for reasons that are structural rather than aesthetic:
+
+- **The anchor is a different thing.** An annotation points at one
+  transcript line, optionally at a character range inside it. Rubric feedback
+  scores a *run* of lines — the whole answer. Pointing an annotation at a
+  range would mean either a second, unrelated anchoring scheme inside the
+  same table, or a convention that "the note on the first line covers the
+  next twelve", which no query can enforce.
+- **Four dimensions, always four.** A rubric is a fixed shape: structure,
+  conciseness, trade-offs, vocabulary. Storing that as four free-form notes
+  makes "did the tutor assess trade-offs?" a string search. As four named
+  fields on one row, a later phase renders `structure: …, conciseness: …,
+  trade-offs: …, vocabulary: …` by reading fields, not by filtering.
+- **Phase 3 already warned about this.** `annotations.create` writes exactly
+  one `reviewCards` row per note. A rubric item is a judgement about an
+  answer, not a phrase to drill, so an annotation-shaped rubric would have
+  had to teach `createForAnnotation` to say no. A separate table means the
+  question never arises, and `reviewCards` stays annotation-sourced exactly
+  as Phase 3 left it.
+
+So: `interviewQuestions` (the bank), `interviewSegments` (a lesson range
+tagged with a question), `interviewRubrics` (at most one row per segment,
+four named dimensions). Transcript lines stay the immutable record; a segment
+is an overlay pointing at them, the same way an annotation is.
+
+### A qualitative rating, not a number
+
+Each dimension takes `strong` / `developing` / `needs-work` and an optional
+note. A 1–5 scale was the alternative and was rejected: one tutor scoring one
+student has nothing to calibrate the middle of a numeric scale against,
+nothing downstream aggregates it yet, and a number invites a precision the
+judgement does not have. Three named levels are one click, read the same way
+by both people, and still aggregate cleanly if Phase 5 ever wants to chart
+them. Both halves of a dimension are optional, so a blank dimension means
+"not assessed" rather than "assessed as absent".
+
+`saveRubric` **replaces** rather than merges: the form submits all four
+dimensions every time, so a dimension the tutor cleared comes back empty. A
+rubric with nothing in any dimension is refused — **Remove** is how feedback
+goes away, so an empty save cannot quietly delete it.
+
+### Tutor-only writes, and where the check lives
+
+Two different rules, deliberately:
+
+- The question bank is content the tutor authors outside any lesson, so
+  `requireTutor` in `model/sessions.ts` gates it on `role === "tutor"` — the
+  same shape as the role checks `startSession` already makes.
+- Segments and rubrics belong to a lesson, so they use `requireSessionTutor`:
+  `requireOwnSession` (membership) narrowed to `session.tutorId`. Authority
+  over *this lesson*, not a role in general. A segment is only reachable
+  through its lesson, so that one check is the whole rule for it and for its
+  rubric.
+
+The client hides controls it knows will be refused; it is not what enforces
+anything. Every mutation was exercised as the student and as an anonymous
+caller against the real deployment, and every one refuses.
+
+### Seeding the question bank and a segment to click through
+
+The dev deployment carries four real questions (one behavioural, one system
+design, one algorithms, one fundamentals) and one tagged segment on the
+24-line seeded lesson from Phase 2 — lines 10 to 21, where David asks *"Tell
+me about a challenging bug you fixed recently"* and Ana answers — with all
+four rubric dimensions filled in against what she actually said. Nothing was
+written behind the mutations' back: the questions went in through
+`interviewQuestions.create`, the segment through `interviewSegments.create`,
+the feedback through `saveRubric`, all as the tutor's real user id.
+
 ## Serving lesson audio: an authenticated route, not a storage link
 
 `ctx.storage.getUrl()` is the obvious way to hand a file to a browser, and it
@@ -694,6 +805,76 @@ it than in Phase 2:
   lesson table's horizontal scroll, focus order through the grade buttons, and
   **dark mode**, which again nothing here rendered.
 
+## What Phase 4 could not verify without a browser
+
+This phase adds no media capture, so the gap is much smaller than Phase 3's.
+Everything below was checked against the real deployment with authenticated
+calls, impersonating the tutor's and the student's real user ids:
+
+- **Every write refuses the wrong caller.** `interviewQuestions.create` /
+  `update` / `remove` refuse an anonymous caller ("Not signed in") and the
+  student ("Only the tutor can do that"). `interviewSegments.create` /
+  `update` / `remove` / `saveRubric` / `removeRubric` refuse the student with
+  "Only the tutor of this lesson can do that" — the session-scoped check, not
+  the role one.
+- **Every validation path.** An empty or whitespace prompt; a tag over 32
+  characters; more than 8 tags; tags lower-cased and deduplicated ("STAR",
+  " star " → one `star`); a topic or difficulty outside the union rejected by
+  the argument validator before the handler runs; a rubric note over 1,000
+  characters; a rubric with nothing in any of the four dimensions; a rating
+  outside `strong` / `developing` / `needs-work`.
+- **Every ownership and integrity path.** A range whose end line belongs to a
+  different lesson; a range that overlaps an existing segment; bounds passed
+  in reverse order (normalised, not rejected); moving a segment with only one
+  of its two bounds ("needs both its first and last line"); tagging or
+  retagging against a question id that no longer exists; acting on a segment
+  that has been deleted.
+- **Deleting the right things.** A question a segment cites refuses to delete
+  and names the count; the same question deletes once the segment is untagged.
+  Deleting a segment deletes its rubric with it — confirmed by reading both
+  tables back afterwards. `removeRubric` on a segment that has no rubric is a
+  no-op, not an error.
+- **`saveRubric` replaces.** Saving one dimension over a full rubric leaves
+  the other three empty, keeps the same row id, preserves `createdAt` and
+  moves `updatedAt`.
+- **`getReview` hydrates the new shape** for both members of the pair:
+  segments sorted by start order, each with its question inlined, its rubric
+  (or `null`), and the rubric author's name.
+- **The line-range selection primitive.** `selectionLineIdsWithin` was
+  exercised against a real DOM (jsdom, throwaway — not added to the repo):
+  a drag from the middle of one line into the next returns both; a drag
+  across four returns four in transcript order; a selection inside one line
+  returns just that line; a selection that *ends exactly at* the next line's
+  leading edge does not pick that line up; a collapsed selection, no
+  selection, and a selection that escapes the transcript all return null.
+
+What still needs a person with a browser — all interaction and layout, none
+of it correctness:
+
+- **The drag itself.** Selecting text across chat bubbles is the one genuinely
+  fiddly interaction here. Whether dragging from the tutor's question down
+  through the answer feels natural, whether the two-line minimum ever gets in
+  the way, and whether the selection survives the scroll that a long answer
+  needs, are all things only a mouse can answer. The primitive is verified;
+  the gesture is not.
+- **The tag bar appearing under a live selection.** It is rendered inside the
+  transcript pane, below the scroller, and the selection is read on the
+  scroller rather than the pane precisely so that clicking the bar does not
+  clear the selection it acts on. That reasoning has never met a real
+  pointer.
+- **The segment chip and the warmer ring** on the lines inside a segment —
+  whether the run reads as a block at a glance, and whether the ring is
+  distinguishable from the active-line ring when the active line is inside a
+  segment.
+- **The rubric form's length.** Four dimensions, each with three chips and a
+  textarea, inside a card on the Interview tab. It is a tall form; whether it
+  wants to be a dialog instead is a judgement to make while looking at it.
+- **Both popovers' placement** — the question picker opens from the tag bar
+  (`side="top"`) and from the segment card (`align="end"`) — and the picker's
+  own scrolling once the bank has more than a handful of questions.
+- **The question bank page at narrow widths**, the wrapping of the topic and
+  difficulty chip rows, and **dark mode**, which again nothing here rendered.
+
 ## Design tokens: the Phase 0 port still matches
 
 The brief asked whether reloop's `packages/tailwind/style.css` had drifted
@@ -709,15 +890,32 @@ needed was missing.
 ## Notes for later phases
 
 - `reviewCards` is no longer empty: `annotations.create` writes one card per
-  note and `annotations.remove` deletes it. Phase 4 should assume that any new
-  annotation-shaped thing it adds needs to decide whether it belongs in the
-  queue, rather than assuming the queue is opt-in.
-- Rubric feedback (Phase 4) is a judgement about an answer, not a thing to
-  memorise. If it becomes an `annotations` row it will silently acquire a review
-  card. Either give it its own table or give `createForAnnotation` a reason to
-  say no. If it does become a new annotation type, it also needs a decision in
-  `RETRY_TYPES` (both copies) — the default there is "no recorder", which is
-  almost certainly right for a rubric note.
+  note and `annotations.remove` deletes it. Any new annotation-shaped thing
+  has to decide whether it belongs in the queue, rather than assuming the
+  queue is opt-in.
+- Phase 3 left the note above asking Phase 4 to keep rubric feedback out of
+  `annotations` for exactly that reason. It did: rubric feedback lives in
+  `interviewRubrics`, `createForAnnotation` was not touched, and
+  `reviewCards` is still sourced only from annotations. Phase 5 should keep
+  it that way unless it has a concrete reason a rubric item is worth
+  drilling — and a rubric item is a judgement about a whole answer, which is
+  not what a two-second clip comparison is for.
+- The rubric rating is a three-level qualitative scale, not a number, and
+  nothing aggregates it yet. If Phase 5's automated scoring wants to sit
+  beside it, the natural shape is a second row per segment marked as
+  machine-authored that the tutor confirms — the same "draft the model
+  produced, human published it" split Phase 5 already plans for
+  pronunciation, not an extra field on the tutor's own row.
+- `interviewSegments` deliberately stores both the bounding line ids and
+  their `order` values. The ids are the anchor; the orders are what overlap
+  checks and range rendering compare. That is safe only because a transcript
+  line's `order` never changes after it is written. If a later phase ever
+  renumbers lines — a re-alignment pass, say — it has to move the segments
+  too.
+- Interview segments may not overlap, and `requireFreeRange` enforces it. If
+  a later phase wants nested or overlapping ranges (a follow-up question
+  inside an answer, for instance), that rule is the single place to change,
+  but the transcript's own highlighting assumes at most one segment per line.
 - `retryRecordings` rows are the only user-generated audio the website itself
   creates. Anything that deletes a lesson later has to reach them through their
   cards: `model/reviewCards.ts` has `deleteRetriesForCard` for exactly that, and
