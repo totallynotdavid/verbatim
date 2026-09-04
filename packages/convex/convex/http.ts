@@ -1,8 +1,12 @@
 import { httpRouter } from "convex/server";
 import { internal } from "./_generated/api";
 import { auth } from "./auth";
-import { httpAction } from "./_generated/server";
-import { LESSON_AUDIO_PATH } from "./model/sessions";
+import { type ActionCtx, httpAction } from "./_generated/server";
+import {
+	LESSON_AUDIO_PATH,
+	RETRY_AUDIO_PATH,
+	type StoredFileTarget,
+} from "./model/sessions";
 
 const http = httpRouter();
 
@@ -27,82 +31,110 @@ function corsHeaders(): Record<string, string> {
 }
 
 /**
- * Streams a recording after reauthorizing the caller for its lesson.
+ * Registers an authenticated audio route.
  *
- * An authenticated route avoids exposing a permanent storage URL. Convex
- * limits HTTP action responses to 20MB.
+ * Lesson recordings and retry recordings are both private audio behind the same
+ * lesson membership check, so they get the same route: no storage URL, the
+ * caller reauthorized on every request, and the bytes streamed from an HTTP
+ * action. They differ only in which id the URL carries and which internal query
+ * resolves it. Convex limits HTTP action responses to 20MB.
  */
-http.route({
-	path: LESSON_AUDIO_PATH,
-	method: "GET",
-	handler: httpAction(async (ctx, request) => {
-		const sessionId = new URL(request.url).searchParams.get("sessionId");
-		if (sessionId === null || sessionId === "") {
-			return new Response("Missing sessionId", {
-				status: 400,
-				headers: corsHeaders(),
-			});
-		}
+function routeStoredAudio({
+	path,
+	param,
+	fetchTarget,
+}: {
+	path: string;
+	/** Query-string parameter carrying the id. */
+	param: string;
+	fetchTarget: (ctx: ActionCtx, id: string) => Promise<StoredFileTarget>;
+}) {
+	http.route({
+		path,
+		method: "GET",
+		handler: httpAction(async (ctx, request) => {
+			const id = new URL(request.url).searchParams.get(param);
+			if (id === null || id === "") {
+				return new Response(`Missing ${param}`, {
+					status: 400,
+					headers: corsHeaders(),
+				});
+			}
 
-		const target = await ctx.runQuery(
-			internal.lessonSessions.audioRequestTarget,
-			{ sessionId },
-		);
+			const target = await fetchTarget(ctx, id);
 
-		if (!target.ok) {
-			const status =
-				target.reason === "unauthenticated"
-					? 401
-					: target.reason === "forbidden"
-						? 403
-						: 404;
-			return new Response(target.reason, {
-				status,
+			if (!target.ok) {
+				const status =
+					target.reason === "unauthenticated"
+						? 401
+						: target.reason === "forbidden"
+							? 403
+							: 404;
+				return new Response(target.reason, {
+					status,
+					headers: {
+						...corsHeaders(),
+						// Tell unauthenticated callers how to authenticate.
+						...(status === 401 ? { "WWW-Authenticate": "Bearer" } : {}),
+					},
+				});
+			}
+
+			const blob = await ctx.storage.get(target.storageId);
+			if (blob === null) {
+				return new Response("not-found", {
+					status: 404,
+					headers: corsHeaders(),
+				});
+			}
+
+			return new Response(blob, {
 				headers: {
 					...corsHeaders(),
-						// Tell unauthenticated callers how to authenticate.
-					...(status === 401 ? { "WWW-Authenticate": "Bearer" } : {}),
+					"Content-Type": target.contentType ?? "application/octet-stream",
+					"Cache-Control": AUDIO_CACHE_CONTROL,
 				},
 			});
-		}
+		}),
+	});
 
-		const blob = await ctx.storage.get(target.storageId);
-		if (blob === null) {
-			return new Response("not-found", { status: 404, headers: corsHeaders() });
-		}
+	/** Responds to browser preflight requests for authenticated audio. */
+	http.route({
+		path,
+		method: "OPTIONS",
+		handler: httpAction(async (_ctx, request) => {
+			const headers = request.headers;
+			if (
+				headers.get("Origin") === null ||
+				headers.get("Access-Control-Request-Method") === null
+			) {
+				return new Response(null, { status: 204 });
+			}
+			return new Response(null, {
+				status: 204,
+				headers: {
+					...corsHeaders(),
+					"Access-Control-Allow-Methods": "GET, OPTIONS",
+					"Access-Control-Allow-Headers": "Authorization",
+					"Access-Control-Max-Age": "86400",
+				},
+			});
+		}),
+	});
+}
 
-		return new Response(blob, {
-			headers: {
-				...corsHeaders(),
-				"Content-Type": target.contentType ?? "application/octet-stream",
-				"Cache-Control": AUDIO_CACHE_CONTROL,
-			},
-		});
-	}),
+routeStoredAudio({
+	path: LESSON_AUDIO_PATH,
+	param: "sessionId",
+	fetchTarget: (ctx, sessionId) =>
+		ctx.runQuery(internal.lessonSessions.audioRequestTarget, { sessionId }),
 });
 
-/** Responds to browser preflight requests for authenticated audio. */
-http.route({
-	path: LESSON_AUDIO_PATH,
-	method: "OPTIONS",
-	handler: httpAction(async (_ctx, request) => {
-		const headers = request.headers;
-		if (
-			headers.get("Origin") === null ||
-			headers.get("Access-Control-Request-Method") === null
-		) {
-			return new Response(null, { status: 204 });
-		}
-		return new Response(null, {
-			status: 204,
-			headers: {
-				...corsHeaders(),
-				"Access-Control-Allow-Methods": "GET, OPTIONS",
-				"Access-Control-Allow-Headers": "Authorization",
-				"Access-Control-Max-Age": "86400",
-			},
-		});
-	}),
+routeStoredAudio({
+	path: RETRY_AUDIO_PATH,
+	param: "retryId",
+	fetchTarget: (ctx, retryId) =>
+		ctx.runQuery(internal.retryRecordings.audioRequestTarget, { retryId }),
 });
 
 export default http;
