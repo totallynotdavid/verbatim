@@ -9,7 +9,14 @@ import * as DetailView from "@verbatim/ui/detail-view";
 import * as Popover from "@verbatim/ui/popover";
 import * as TabMenu from "@verbatim/ui/tab-menu-horizontal";
 import { useMutation, useQuery } from "convex/react";
-import { ArrowLeft, ClipboardList, MessageSquareText, ScrollText, Tag } from "lucide-react";
+import {
+	ArrowLeft,
+	ClipboardList,
+	MessageSquareText,
+	ScrollText,
+	Sparkles,
+	Tag,
+} from "lucide-react";
 import Link from "next/link";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SessionStatusBadge } from "@/components/session-status-badge";
@@ -21,10 +28,11 @@ import { AnnotationCard } from "./annotation-card";
 import { AudioPanel } from "./audio-panel";
 import { InterviewPanel } from "./interview-panel";
 import { QuestionPicker } from "./question-picker";
+import { SuggestionsPanel } from "./suggestions-panel";
 import { TranscriptLine } from "./transcript-line";
-import type { ReviewAnnotation, ReviewSegment } from "./types";
+import type { ReviewAnnotation, ReviewSegment, ReviewSuggestion } from "./types";
 
-type Tab = "transcript" | "notes" | "interview";
+type Tab = "transcript" | "notes" | "interview" | "suggestions";
 
 const DAY = new Intl.DateTimeFormat(undefined, {
 	weekday: "long",
@@ -54,8 +62,13 @@ export function ReviewView({ sessionId }: { sessionId: string }) {
 
 	const lines = useMemo(() => review?.lines ?? [], [review]);
 	const segments = useMemo(() => review?.interviewSegments ?? [], [review]);
+	// Suggestions are tutor-only; the backend returns none for students.
+	const suggestions = useMemo(
+		() => review?.analysis.suggestions ?? [],
+		[review],
+	);
 	const isTutor = review?.session.viewerRole === "tutor";
-	// HTTP audio requests reauthorize this short-lived token.
+	// Audio routes authorize each request with this token.
 	const authToken = useAuthToken();
 	const player = useClipPlayer({
 		url: review?.audio?.url ?? null,
@@ -105,6 +118,17 @@ export function ReviewView({ sessionId }: { sessionId: string }) {
 		}
 		return grouped;
 	}, [review]);
+
+	// Group drafts by line so tutors can see their transcript context.
+	const suggestionsByLine = useMemo(() => {
+		const grouped = new Map<string, ReviewSuggestion[]>();
+		for (const suggestion of suggestions) {
+			const bucket = grouped.get(suggestion.transcriptLineId);
+			if (bucket) bucket.push(suggestion);
+			else grouped.set(suggestion.transcriptLineId, [suggestion]);
+		}
+		return grouped;
+	}, [suggestions]);
 
 	const selectLine = useCallback(
 		(lineId: string) => {
@@ -244,6 +268,18 @@ export function ReviewView({ sessionId }: { sessionId: string }) {
 								</span>
 							) : null}
 						</TabMenu.Trigger>
+						<TabMenu.Trigger
+							value="suggestions"
+							className="h-10 cursor-pointer gap-1.5"
+						>
+							<TabMenu.Icon as={Sparkles} className="size-4" />
+							Suggestions
+							{suggestions.length > 0 ? (
+								<span className="ml-0.5 rounded-full bg-bg-weak-50 px-1.5 py-0.5 label-xs text-text-sub-600">
+									{suggestions.length}
+								</span>
+							) : null}
+						</TabMenu.Trigger>
 					</TabMenu.List>
 				</TabMenu.Root>
 			</DetailView.Header>
@@ -297,6 +333,7 @@ export function ReviewView({ sessionId }: { sessionId: string }) {
 												sessionId={session._id}
 												line={line}
 												annotations={byLine.get(line._id) ?? []}
+												suggestions={suggestionsByLine.get(line._id) ?? []}
 												mine={line.speakerId === session.viewerId}
 												startsGroup={
 													previous === undefined ||
@@ -425,6 +462,19 @@ export function ReviewView({ sessionId }: { sessionId: string }) {
 						</DetailView.Card>
 					</DetailView.Side>
 				</DetailView.Split>
+			) : tab === "suggestions" ? (
+				<SuggestionsPanel
+					sessionId={session._id}
+					analysis={review.analysis}
+					lines={lines}
+					isTutor={isTutor}
+					sessionStatus={session.status}
+					hasAudio={review.audio !== null}
+					onJump={(lineId) => {
+						setTab("transcript");
+						selectLine(lineId);
+					}}
+				/>
 			) : tab === "interview" ? (
 				<InterviewPanel
 					segments={segments}

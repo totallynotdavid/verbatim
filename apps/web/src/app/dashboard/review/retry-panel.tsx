@@ -1,24 +1,23 @@
 "use client";
 
 import { api } from "@verbatim/backend/convex/_generated/api";
+import * as Badge from "@verbatim/ui/badge";
 import * as Button from "@verbatim/ui/button";
 import { cn } from "@verbatim/ui/cn";
 import { useMutation } from "convex/react";
 import { Mic, Play, Square, Trash2, Upload, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { formatDuration } from "@/lib/review-grades";
+import { scoreColor } from "@/lib/scoring";
 import type { ClipPlayer } from "@/lib/use-clip-player";
 import { MAX_RETRY_MS, useMicRecorder } from "@/lib/use-mic-recorder";
 import type { ReviewCard, RetryRecording } from "./types";
 
 /**
- * Records the student saying the flagged words again and plays the take back
- * next to the original.
+ * Records retries for flagged words and plays them beside the original.
  *
- * Comparison is the whole feature: there is no scoring here, and there is not
- * meant to be until Phase 5. Each take is stored as its own short recording
- * rather than edited into the lesson audio, so the lesson stays the record of
- * what was actually said.
+ * Each take stays separate from lesson audio. Worker scores are informational;
+ * the student's SM-2 grade remains separate.
  */
 export function RetryPanel({
 	card,
@@ -31,11 +30,7 @@ export function RetryPanel({
 }: {
 	card: ReviewCard;
 	viewerId: string;
-	/**
-	 * Whether this note's type is one a retry says anything about. False only
-	 * for a card that already holds takes and was re-typed afterwards, which
-	 * keeps them playable without offering to add more.
-	 */
+	/** Whether this card can accept another retry. */
 	canRecord: boolean;
 	/** Player bound to the selected saved retry. */
 	player: ClipPlayer;
@@ -56,7 +51,7 @@ export function RetryPanel({
 	const take = recorder.recording;
 	const clearTake = recorder.clear;
 
-	// Keep the object URL alive exactly as long as the take it points at.
+	// Keep the preview URL alive only while its take exists.
 	useEffect(() => {
 		if (take === null) {
 			setPreviewUrl(null);
@@ -67,7 +62,7 @@ export function RetryPanel({
 		return () => URL.revokeObjectURL(url);
 	}, [take]);
 
-	// A new card means a new take. Never carry one across.
+	// A new card must not inherit the previous take.
 	useEffect(() => {
 		clearTake();
 		setSaveError(null);
@@ -153,7 +148,7 @@ export function RetryPanel({
 							<span className="font-mono text-[11px] text-error-base">
 								● {formatDuration(recorder.elapsedMs)}
 							</span>
-							{/* Peak level, so a muted or wrong microphone shows before saving. */}
+							{/* Show a muted microphone before the take is saved. */}
 							<span
 								aria-hidden
 								className="h-1.5 w-24 overflow-hidden rounded-full bg-bg-weak-50"
@@ -180,7 +175,7 @@ export function RetryPanel({
 					<p className="label-xs text-text-strong-950">
 						New take · {formatDuration(take.durationMs)}
 					</p>
-					{/* A local blob needs no auth, so it plays with native controls. */}
+					{/* The local preview blob can play without an authenticated route. */}
 					<audio src={previewUrl} controls className="w-full">
 						<track kind="captions" />
 					</audio>
@@ -253,6 +248,69 @@ export function RetryPanel({
 	);
 }
 
+function ScoreReadout({
+	score,
+}: {
+	score: NonNullable<RetryRecording["pronunciation"]>;
+}) {
+	if (score.status === "scoring") {
+		return (
+			<p className="mt-1.5 font-mono text-[11px] text-text-soft-400">
+				scoring this take…
+			</p>
+		);
+	}
+	if (score.status === "failed") {
+		return (
+			<p className="mt-1.5 font-mono text-[11px] text-text-soft-400">
+				{score.error ?? "this take could not be scored"}
+			</p>
+		);
+	}
+
+	return (
+		<div className="mt-1.5 flex flex-col gap-1.5 rounded-lg bg-bg-weak-50 px-2.5 py-2">
+			<div className="flex flex-wrap items-center gap-2">
+				{score.score === null ? null : (
+					<Badge.Root
+						size="small"
+						variant="lighter"
+						color={scoreColor(score.score)}
+					>
+						{Math.round(score.score)}/100
+					</Badge.Root>
+				)}
+				<span className="min-w-0 flex-1 truncate paragraph-xs text-text-sub-600">
+					heard “{score.transcript ?? "nothing"}”
+				</span>
+			</div>
+
+			{score.words.length === 0 ? (
+				<p className="paragraph-xs text-text-soft-400">
+					No sounds flagged against “{score.expectedText}”.
+				</p>
+			) : (
+				<ul className="flex flex-col gap-0.5">
+					{score.words.map((word) => (
+						<li
+							key={`${word.word}-${word.expected}`}
+							className="flex flex-wrap items-baseline gap-1.5 paragraph-xs text-text-sub-600"
+						>
+							<span className="text-text-strong-950">{word.word}</span>
+							<span className="font-mono text-[11px] text-text-soft-400">
+								/{word.expected}/ → /{word.heard || "…"}/
+							</span>
+							<span className="font-mono text-[11px] text-text-soft-400">
+								{Math.round(word.confidence * 100)}%
+							</span>
+						</li>
+					))}
+				</ul>
+			)}
+		</div>
+	);
+}
+
 const TIME = new Intl.DateTimeFormat(undefined, {
 	day: "numeric",
 	month: "short",
@@ -283,41 +341,47 @@ function RetryRow({
 	return (
 		<li
 			className={cn(
-				"flex items-center gap-2 rounded-lg px-2 py-1.5 ring-1 ring-inset transition-colors",
+				"rounded-lg px-2 py-1.5 ring-1 ring-inset transition-colors",
 				selected
 					? "bg-bg-white-0 ring-primary-base"
 					: "bg-bg-white-0 ring-stroke-soft-200",
 			)}
 		>
-			<button
-				type="button"
-				onClick={onPlay}
-				aria-label={`Play take ${index + 1}`}
-				className={cn(
-					"inline-flex cursor-pointer items-center gap-1.5 rounded px-1 py-0.5 font-mono text-[11px] transition-colors",
-					playing ? "text-primary-base" : "text-text-sub-600 hover:text-text-strong-950",
-				)}
-			>
-				{playing ? <Square className="size-3" /> : <Play className="size-3" />}
-				take {index + 1}
-			</button>
-			<span className="font-mono text-[11px] text-text-soft-400">
-				{formatDuration(retry.durationMs)}
-			</span>
-			<span className="min-w-0 flex-1 truncate paragraph-xs text-text-soft-400">
-				{selected && !canPlay ? "loading…" : TIME.format(new Date(retry.createdAt))}
-			</span>
-			{mine ? (
+			<div className="flex items-center gap-2">
 				<button
 					type="button"
-					onClick={onRemove}
-					aria-label={`Delete take ${index + 1}`}
-					className="cursor-pointer rounded p-1 text-text-soft-400 transition-colors hover:bg-bg-weak-50 hover:text-error-base"
+					onClick={onPlay}
+					aria-label={`Play take ${index + 1}`}
+					className={cn(
+						"inline-flex cursor-pointer items-center gap-1.5 rounded px-1 py-0.5 font-mono text-[11px] transition-colors",
+						playing ? "text-primary-base" : "text-text-sub-600 hover:text-text-strong-950",
+					)}
 				>
-					<Trash2 className="size-3.5" />
+					{playing ? <Square className="size-3" /> : <Play className="size-3" />}
+					take {index + 1}
 				</button>
-			) : (
-				<span className="paragraph-xs text-text-soft-400">partner</span>
+				<span className="font-mono text-[11px] text-text-soft-400">
+					{formatDuration(retry.durationMs)}
+				</span>
+				<span className="min-w-0 flex-1 truncate paragraph-xs text-text-soft-400">
+					{selected && !canPlay ? "loading…" : TIME.format(new Date(retry.createdAt))}
+				</span>
+				{mine ? (
+					<button
+						type="button"
+						onClick={onRemove}
+						aria-label={`Delete take ${index + 1}`}
+						className="cursor-pointer rounded p-1 text-text-soft-400 transition-colors hover:bg-bg-weak-50 hover:text-error-base"
+					>
+						<Trash2 className="size-3.5" />
+					</button>
+				) : (
+					<span className="paragraph-xs text-text-soft-400">partner</span>
+				)}
+			</div>
+
+			{retry.pronunciation === null ? null : (
+				<ScoreReadout score={retry.pronunciation} />
 			)}
 		</li>
 	);

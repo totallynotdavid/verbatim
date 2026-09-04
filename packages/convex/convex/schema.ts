@@ -107,6 +107,8 @@ export default defineSchema({
 		charEnd: v.optional(v.number()),
 		authorId: v.id("users"),
 		createdAt: v.number(),
+		/** `"auto"` marks a tutor-confirmed model suggestion. */
+		source: v.optional(v.union(v.literal("tutor"), v.literal("auto"))),
 	})
 		.index("sessionId", ["sessionId"])
 		.index("transcriptLineId", ["transcriptLineId"]),
@@ -185,4 +187,86 @@ export default defineSchema({
 	})
 		.index("segmentId", ["segmentId"])
 		.index("sessionId", ["sessionId"]),
+
+	/** A tutor-triggered lesson analysis tracked until the external callback. */
+	pronunciationRuns: defineTable({
+		sessionId: v.id("lessonSessions"),
+		requestedBy: v.id("users"),
+		requestedAt: v.number(),
+		status: v.union(
+			v.literal("queued"),
+			v.literal("transcribing"),
+			v.literal("scoring"),
+			v.literal("complete"),
+			v.literal("failed"),
+		),
+		// Provider id used for tracing and cancellation.
+		predictionId: v.optional(v.string()),
+		// Large provider output is stored separately from the run row.
+		resultStorageId: v.optional(v.id("_storage")),
+		wordsRead: v.optional(v.number()),
+		suggestionsCreated: v.optional(v.number()),
+		error: v.optional(v.string()),
+		completedAt: v.optional(v.number()),
+	}).index("sessionId", ["sessionId"]),
+
+	/** Model-proposed notes awaiting tutor review. */
+	pronunciationSuggestions: defineTable({
+		sessionId: v.id("lessonSessions"),
+		runId: v.id("pronunciationRuns"),
+		transcriptLineId: v.id("transcriptLines"),
+		worker: v.union(v.literal("whisperx"), v.literal("openpronounce")),
+		note: v.string(),
+		// Optional range in immutable transcript text.
+		charStart: v.optional(v.number()),
+		charEnd: v.optional(v.number()),
+		// Model confidence, shown but not edited.
+		confidence: v.optional(v.number()),
+		status: v.union(
+			v.literal("pending"),
+			v.literal("confirmed"),
+			v.literal("dismissed"),
+		),
+		// Annotation created when a tutor confirms the suggestion.
+		annotationId: v.optional(v.id("annotations")),
+		reviewedBy: v.optional(v.id("users")),
+		reviewedAt: v.optional(v.number()),
+		createdAt: v.number(),
+	})
+		.index("sessionId", ["sessionId"])
+		.index("runId", ["runId"])
+		.index("transcriptLineId", ["transcriptLineId"]),
+
+	/** Read-only phoneme result for one retry recording. */
+	pronunciationScores: defineTable({
+		retryRecordingId: v.id("retryRecordings"),
+		annotationId: v.id("annotations"),
+		sessionId: v.id("lessonSessions"),
+		status: v.union(
+			v.literal("scoring"),
+			v.literal("complete"),
+			v.literal("failed"),
+		),
+		// Exact text used for comparison.
+		expectedText: v.string(),
+		score: v.optional(v.number()),
+		// Transcript produced by the word recognizer.
+		transcript: v.optional(v.string()),
+		// Highest-priority word errors; full detail is stored separately.
+		words: v.optional(
+			v.array(
+				v.object({
+					word: v.string(),
+					expected: v.string(),
+					heard: v.string(),
+					confidence: v.number(),
+				}),
+			),
+		),
+		// Full worker response, including fields not shown in the UI.
+		detailStorageId: v.optional(v.id("_storage")),
+		error: v.optional(v.string()),
+		createdAt: v.number(),
+		completedAt: v.optional(v.number()),
+	}).index("retryRecordingId", ["retryRecordingId"]),
 });

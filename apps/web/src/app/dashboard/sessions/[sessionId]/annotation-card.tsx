@@ -4,7 +4,7 @@ import * as Badge from "@verbatim/ui/badge";
 import * as Popover from "@verbatim/ui/popover";
 import { api } from "@verbatim/backend/convex/_generated/api";
 import { useMutation } from "convex/react";
-import { Pencil, Trash2 } from "lucide-react";
+import { Pencil, Sparkles, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { annotationType } from "@/lib/annotation-types";
 import { AnnotationForm } from "./annotation-form";
@@ -39,6 +39,17 @@ export function AnnotationCard({
 				<Badge.Root size="medium" variant="lighter" color={meta.color}>
 					{meta.label}
 				</Badge.Root>
+				{annotation.source === "auto" ? (
+					<Badge.Root
+						size="medium"
+						variant="lighter"
+						color="gray"
+						title="Proposed by the automated pass and confirmed by the tutor"
+					>
+						<Badge.Icon as={Sparkles} />
+						Confirmed
+					</Badge.Root>
+				) : null}
 				<div className="min-w-0 flex-1" />
 				{annotation.isOwn ? (
 					<div className="flex shrink-0 items-center gap-0.5">
@@ -106,7 +117,6 @@ export function AnnotationCard({
 				{annotation.note}
 			</p>
 
-				{/* Controls identify own inline notes. Partner notes keep a byline. */}
 			{compact && annotation.isOwn ? null : (
 				<p className="mt-1.5 font-mono text-[11px] text-text-soft-400">
 					{annotation.isOwn ? "You" : (annotation.authorName ?? "Your partner")}
