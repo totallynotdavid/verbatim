@@ -17,9 +17,9 @@ export default defineSchema({
 		googleSub: v.optional(v.string()),
 		role: v.optional(v.union(v.literal("tutor"), v.literal("student"))),
 		pairedWithUserId: v.optional(v.id("users")),
-		// User-level consent. Sessions snapshot it when they start.
+		// User consent captured when a session starts.
 		standingConsent: v.optional(v.boolean()),
-		// Present while an invite is available. Cleared when the invite is redeemed.
+		// Present while an invite can be redeemed.
 		pairingInviteCode: v.optional(v.string()),
 	})
 		.index("email", ["email"])
@@ -39,10 +39,10 @@ export default defineSchema({
 		),
 		audioStorageId: v.optional(v.id("_storage")),
 		audioDurationMs: v.optional(v.number()),
-		// Delay from the session clock's origin to the first audio sample. Seek a
-		// line at startMs with startMs - audioOffsetMs.
+		// Delay from session start to the first audio sample. Seek with
+		// startMs - audioOffsetMs.
 		audioOffsetMs: v.optional(v.number()),
-		// Snapshot of each user's consent when the session starts.
+		// Consent values captured when the session starts.
 		consentTutor: v.boolean(),
 		consentStudent: v.boolean(),
 	})
@@ -51,9 +51,9 @@ export default defineSchema({
 
 	transcriptLines: defineTable({
 		sessionId: v.id("lessonSessions"),
-		// Meet exposes a display name, so resolve the account only on an exact match.
+		// Set only when the Meet name exactly matches a participant.
 		speakerId: v.optional(v.id("users")),
-		// Preserve the display name when the account cannot be resolved.
+		// Preserve the Meet name when it does not resolve to an account.
 		speakerLabel: v.optional(v.string()),
 		text: v.string(),
 		startMs: v.number(),
@@ -61,7 +61,7 @@ export default defineSchema({
 		order: v.number(),
 	})
 		.index("sessionId", ["sessionId"])
-		// The pair of fields makes retried line uploads idempotent.
+		// Retries use session and order as the stable key.
 		.index("sessionId_order", ["sessionId", "order"]),
 
 	annotations: defineTable({
@@ -76,6 +76,9 @@ export default defineSchema({
 			v.literal("technical"),
 		),
 		note: v.string(),
+		// Optional range in immutable line text. Omit it for a line-level note.
+		charStart: v.optional(v.number()),
+		charEnd: v.optional(v.number()),
 		authorId: v.id("users"),
 		createdAt: v.number(),
 	})

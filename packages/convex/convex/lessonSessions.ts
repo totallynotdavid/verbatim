@@ -1,20 +1,24 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { mutation, query, type QueryCtx } from "./_generated/server";
+import {
+	internalQuery,
+	mutation,
+	query,
+	type QueryCtx,
+} from "./_generated/server";
+import {
+	LESSON_AUDIO_PATH,
+	loadParticipants,
+	requireCurrentUser,
+	requireOwnSession,
+} from "./model/sessions";
 
 async function requirePairedUser(ctx: QueryCtx): Promise<{
 	user: Doc<"users">;
 	partner: Doc<"users">;
 }> {
-	const userId = await getAuthUserId(ctx);
-	if (userId === null) {
-		throw new Error("Not signed in");
-	}
-	const user = await ctx.db.get(userId);
-	if (user === null) {
-		throw new Error("Signed-in user no longer exists");
-	}
+	const user = await requireCurrentUser(ctx);
 	if (user.pairedWithUserId === undefined) {
 		throw new Error("Not paired with a tutor/student yet");
 	}
@@ -25,26 +29,12 @@ async function requirePairedUser(ctx: QueryCtx): Promise<{
 	return { user, partner };
 }
 
-/** Enforces ownership before a session is read or changed. */
-async function requireOwnSession(
-	ctx: QueryCtx,
-	sessionId: Id<"lessonSessions">,
-): Promise<Doc<"lessonSessions">> {
-	const userId = await getAuthUserId(ctx);
-	if (userId === null) {
-		throw new Error("Not signed in");
-	}
-	const session = await ctx.db.get(sessionId);
-	if (session === null) {
-		throw new Error("Lesson session not found");
-	}
-	if (session.tutorId !== userId && session.studentId !== userId) {
-		throw new Error("That lesson session belongs to someone else");
-	}
-	return session;
-}
-
-/** Returns the current user's sessions, most recent first. */
+/**
+ * Returns the current pair's sessions, most recent first.
+ *
+ * Count annotations without loading transcript lines, so list cost follows
+ * note count rather than transcript length.
+ */
 export const listForCurrentPair = query({
 	args: {},
 	handler: async (ctx) => {
@@ -56,6 +46,7 @@ export const listForCurrentPair = query({
 		if (user === null || user.pairedWithUserId === undefined) {
 			return [];
 		}
+		const partner = await ctx.db.get(user.pairedWithUserId);
 
 		const [asTutor, asStudent] = await Promise.all([
 			ctx.db
@@ -68,14 +59,182 @@ export const listForCurrentPair = query({
 				.collect(),
 		]);
 
-		return [...asTutor, ...asStudent].sort((a, b) => b.startedAt - a.startedAt);
+		const sessions = [...asTutor, ...asStudent].sort(
+			(a, b) => b.startedAt - a.startedAt,
+		);
+
+		return Promise.all(
+			sessions.map(async (session) => {
+				const annotations = await ctx.db
+					.query("annotations")
+					.withIndex("sessionId", (q) => q.eq("sessionId", session._id))
+					.collect();
+
+				return {
+					_id: session._id,
+					startedAt: session.startedAt,
+					endedAt: session.endedAt ?? null,
+					status: session.status,
+					hasAudio: session.audioStorageId !== undefined,
+					audioDurationMs: session.audioDurationMs ?? null,
+					annotationCount: annotations.length,
+					partnerName: partner?.name ?? null,
+					viewerRole: session.tutorId === user._id ? "tutor" : "student",
+				};
+			}),
+		);
 	},
 });
 
 /**
- * Enforces consent at the session boundary. Both users' current settings are
- * read server-side, so clients cannot supply consent values.
+ * Returns the review data for one session.
+ *
+ * Auth that is still resolving returns `null`. An existing unauthorized
+ * session raises an authorization error.
  */
+export const getReview = query({
+	args: {
+		sessionId: v.id("lessonSessions"),
+	},
+	handler: async (ctx, args) => {
+		const viewerId = await getAuthUserId(ctx);
+		if (viewerId === null) {
+			return null;
+		}
+
+		const { session } = await requireOwnSession(ctx, args.sessionId);
+		const { tutor, student } = await loadParticipants(ctx, session);
+
+		const [lines, annotations] = await Promise.all([
+			ctx.db
+				.query("transcriptLines")
+				.withIndex("sessionId_order", (q) => q.eq("sessionId", session._id))
+				.collect(),
+			ctx.db
+				.query("annotations")
+				.withIndex("sessionId", (q) => q.eq("sessionId", session._id))
+				.collect(),
+		]);
+
+		// Keep the client contract explicit: lines are ordered by transcript order.
+		lines.sort((a, b) => a.order - b.order);
+
+		const nameFor = (userId: Doc<"users">["_id"] | undefined) => {
+			if (userId === undefined) return null;
+			if (userId === tutor?._id) return tutor?.name ?? null;
+			if (userId === student?._id) return student?.name ?? null;
+			return null;
+		};
+
+		// The route reauthorizes access on each request. Do not expose a storage URL.
+		const storageId = session.audioStorageId;
+		let audio: {
+			url: string;
+			durationMs: number | null;
+			offsetMs: number;
+			contentType: string | null;
+			sizeBytes: number | null;
+		} | null = null;
+		if (storageId !== undefined) {
+			const metadata = await ctx.db.system.get(storageId);
+			audio = {
+				url: `${process.env.CONVEX_SITE_URL}${LESSON_AUDIO_PATH}?sessionId=${session._id}`,
+				// Session metadata is authoritative because WebM may omit duration.
+				durationMs: session.audioDurationMs ?? null,
+				offsetMs: session.audioOffsetMs ?? 0,
+				contentType: metadata?.contentType ?? null,
+				sizeBytes: metadata?.size ?? null,
+			};
+		}
+
+		return {
+			session: {
+				_id: session._id,
+				startedAt: session.startedAt,
+				endedAt: session.endedAt ?? null,
+				status: session.status,
+				tutorId: session.tutorId,
+				studentId: session.studentId,
+				tutorName: tutor?.name ?? null,
+				studentName: student?.name ?? null,
+				viewerId,
+				viewerRole: session.tutorId === viewerId ? "tutor" : "student",
+			},
+			audio,
+			lines: lines.map((line) => ({
+				_id: line._id,
+				speakerId: line.speakerId ?? null,
+				speakerLabel: line.speakerLabel ?? null,
+				speakerName: nameFor(line.speakerId) ?? line.speakerLabel ?? null,
+				text: line.text,
+				startMs: line.startMs,
+				endMs: line.endMs,
+				order: line.order,
+			})),
+			annotations: annotations
+				.map((annotation) => ({
+					_id: annotation._id,
+					transcriptLineId: annotation.transcriptLineId,
+					type: annotation.type,
+					note: annotation.note,
+					charStart: annotation.charStart ?? null,
+					charEnd: annotation.charEnd ?? null,
+					authorId: annotation.authorId,
+					authorName: nameFor(annotation.authorId),
+					isOwn: annotation.authorId === viewerId,
+					createdAt: annotation.createdAt,
+				}))
+				.sort((a, b) => a.createdAt - b.createdAt),
+		};
+	},
+});
+
+/**
+ * Authorizes a lesson-audio request and returns a result the HTTP route can map
+ * to a status code. String input lets malformed URL ids return 404.
+ */
+export const audioRequestTarget = internalQuery({
+	args: {
+		sessionId: v.string(),
+	},
+	handler: async (
+		ctx,
+		args,
+	): Promise<
+		| { ok: true; storageId: Id<"_storage">; contentType: string | null }
+		| { ok: false; reason: "unauthenticated" | "forbidden" | "not-found" }
+	> => {
+		const userId = await getAuthUserId(ctx);
+		if (userId === null) {
+			return { ok: false, reason: "unauthenticated" };
+		}
+
+		const sessionId = ctx.db.normalizeId("lessonSessions", args.sessionId);
+		if (sessionId === null) {
+			return { ok: false, reason: "not-found" };
+		}
+		const session = await ctx.db.get(sessionId);
+		if (session === null) {
+			return { ok: false, reason: "not-found" };
+		}
+		if (session.tutorId !== userId && session.studentId !== userId) {
+			// Return 403 only after authentication, without exposing session membership.
+			return { ok: false, reason: "forbidden" };
+		}
+		if (session.audioStorageId === undefined) {
+			return { ok: false, reason: "not-found" };
+		}
+
+		const metadata = await ctx.db.system.get(session.audioStorageId);
+		return {
+			ok: true,
+			storageId: session.audioStorageId,
+			contentType: metadata?.contentType ?? null,
+		};
+	},
+});
+
+/** Checks both users' current consent before creating a session. */
 export const startSession = mutation({
 	args: {},
 	handler: async (ctx) => {
@@ -110,14 +269,13 @@ export const startSession = mutation({
 	},
 });
 
-/** Moves text capture to processing while audio is attached. */
 export const finishCapture = mutation({
 	args: {
 		sessionId: v.id("lessonSessions"),
 	},
 	handler: async (ctx, args) => {
-		const session = await requireOwnSession(ctx, args.sessionId);
-		// Make repeated stops idempotent.
+		const { session } = await requireOwnSession(ctx, args.sessionId);
+		// Repeated stops should be harmless.
 		if (session.status !== "recording") {
 			return session.status;
 		}
@@ -130,7 +288,6 @@ export const finishCapture = mutation({
 	},
 });
 
-/** Creates a short-lived upload URL for one recording attempt. */
 export const generateAudioUploadUrl = mutation({
 	args: {
 		sessionId: v.id("lessonSessions"),
@@ -141,7 +298,6 @@ export const generateAudioUploadUrl = mutation({
 	},
 });
 
-/** Attaches audio and marks the session ready. */
 export const attachAudio = mutation({
 	args: {
 		sessionId: v.id("lessonSessions"),
@@ -150,14 +306,14 @@ export const attachAudio = mutation({
 		offsetMs: v.number(),
 	},
 	handler: async (ctx, args) => {
-		const session = await requireOwnSession(ctx, args.sessionId);
+		const { session } = await requireOwnSession(ctx, args.sessionId);
 		if (session.status === "recording") {
 			throw new Error(
 				"Lesson session is still recording; finish capture before attaching audio",
 			);
 		}
 
-		// Remove the previous upload when a retry replaces it.
+		// Delete the old upload when replacing it.
 		if (
 			session.audioStorageId !== undefined &&
 			session.audioStorageId !== args.storageId
@@ -176,13 +332,12 @@ export const attachAudio = mutation({
 	},
 });
 
-/** Closes a session whose transcript has no recording. */
 export const finishWithoutAudio = mutation({
 	args: {
 		sessionId: v.id("lessonSessions"),
 	},
 	handler: async (ctx, args) => {
-		const session = await requireOwnSession(ctx, args.sessionId);
+		const { session } = await requireOwnSession(ctx, args.sessionId);
 		if (session.status === "recording") {
 			throw new Error(
 				"Lesson session is still recording; finish capture first",

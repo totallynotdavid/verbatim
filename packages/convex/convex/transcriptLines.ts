@@ -1,28 +1,9 @@
-import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, type MutationCtx } from "./_generated/server";
+import { requireOwnSession } from "./model/sessions";
 
-/** Loads a session owned by the signed-in user. */
-async function requireOwnSession(
-	ctx: MutationCtx,
-	sessionId: Id<"lessonSessions">,
-): Promise<Doc<"lessonSessions">> {
-	const userId = await getAuthUserId(ctx);
-	if (userId === null) {
-		throw new Error("Not signed in");
-	}
-	const session = await ctx.db.get(sessionId);
-	if (session === null) {
-		throw new Error("Lesson session not found");
-	}
-	if (session.tutorId !== userId && session.studentId !== userId) {
-		throw new Error("That lesson session belongs to someone else");
-	}
-	return session;
-}
-
-/** Matches Meet's display name to a session user, if possible. */
+/** Resolves an exact participant-name match. */
 async function resolveSpeakerId(
 	ctx: MutationCtx,
 	session: Doc<"lessonSessions">,
@@ -48,7 +29,7 @@ async function resolveSpeakerId(
 	return undefined;
 }
 
-/** Stores finalized caption lines. Stable order makes retries idempotent. */
+/** Stores finalized caption lines. Order makes retries idempotent. */
 export const append = mutation({
 	args: {
 		sessionId: v.id("lessonSessions"),
@@ -63,7 +44,7 @@ export const append = mutation({
 		),
 	},
 	handler: async (ctx, args) => {
-		const session = await requireOwnSession(ctx, args.sessionId);
+		const { session } = await requireOwnSession(ctx, args.sessionId);
 		if (session.status !== "recording") {
 			throw new Error(
 				`Lesson session is no longer recording (status: ${session.status})`,
