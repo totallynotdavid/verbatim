@@ -1,22 +1,10 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
-import type { Doc } from "./_generated/dataModel";
-import { mutation, query, type QueryCtx } from "./_generated/server";
-
-async function requireCurrentUser(ctx: QueryCtx): Promise<Doc<"users">> {
-	const userId = await getAuthUserId(ctx);
-	if (userId === null) {
-		throw new Error("Not signed in");
-	}
-	const user = await ctx.db.get(userId);
-	if (user === null) {
-		throw new Error("Signed-in user no longer exists");
-	}
-	return user;
-}
+import { mutation, query } from "./_generated/server";
+import { requireCurrentUser } from "./model/sessions";
 
 function generateInviteCode(): string {
-	// Avoid visually ambiguous characters in codes.
+	// Avoid visually ambiguous characters.
 	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 	let code = "";
 	for (let i = 0; i < 6; i++) {

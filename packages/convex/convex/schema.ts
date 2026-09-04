@@ -2,6 +2,33 @@ import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
+/** Broad interview-question buckets. Tags carry the rest. */
+export const interviewTopic = v.union(
+	v.literal("algorithms"),
+	v.literal("system-design"),
+	v.literal("behavioral"),
+	v.literal("fundamentals"),
+);
+
+export const interviewDifficulty = v.union(
+	v.literal("easy"),
+	v.literal("medium"),
+	v.literal("hard"),
+);
+
+/** Qualitative rubric levels rather than numeric scores. */
+export const rubricRating = v.union(
+	v.literal("strong"),
+	v.literal("developing"),
+	v.literal("needs-work"),
+);
+
+/** Feedback for one rubric dimension, which may be left unassessed. */
+export const rubricEntry = v.object({
+	rating: v.optional(rubricRating),
+	note: v.optional(v.string()),
+});
+
 export default defineSchema({
 	...authTables,
 
@@ -121,4 +148,47 @@ export default defineSchema({
 	})
 		.index("reviewCardId", ["reviewCardId"])
 		.index("annotationId", ["annotationId"]),
+
+	/** Tutor-authored interview questions, independent of a lesson. */
+	interviewQuestions: defineTable({
+		topic: interviewTopic,
+		difficulty: interviewDifficulty,
+		prompt: v.string(),
+		// Free-form labels complement the topic enum.
+		tags: v.array(v.string()),
+		createdBy: v.id("users"),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	}),
+
+	/** A transcript range tagged with an interview question. */
+	interviewSegments: defineTable({
+		sessionId: v.id("lessonSessions"),
+		questionId: v.id("interviewQuestions"),
+		startLineId: v.id("transcriptLines"),
+		endLineId: v.id("transcriptLines"),
+		// Cached bounds for overlap checks and range rendering.
+		startOrder: v.number(),
+		endOrder: v.number(),
+		createdBy: v.id("users"),
+		createdAt: v.number(),
+	})
+		.index("sessionId", ["sessionId"])
+		.index("questionId", ["questionId"]),
+
+	/** Four-dimension feedback attached to an interview segment. */
+	interviewRubrics: defineTable({
+		segmentId: v.id("interviewSegments"),
+		// Denormalized for lesson-scoped reads.
+		sessionId: v.id("lessonSessions"),
+		structure: rubricEntry,
+		conciseness: rubricEntry,
+		tradeoffs: rubricEntry,
+		vocabulary: rubricEntry,
+		authorId: v.id("users"),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("segmentId", ["segmentId"])
+		.index("sessionId", ["sessionId"]),
 });

@@ -107,7 +107,7 @@ export const getReview = query({
 		const { session } = await requireOwnSession(ctx, args.sessionId);
 		const { tutor, student } = await loadParticipants(ctx, session);
 
-		const [lines, annotations] = await Promise.all([
+		const [lines, annotations, segments, rubrics] = await Promise.all([
 			ctx.db
 				.query("transcriptLines")
 				.withIndex("sessionId_order", (q) => q.eq("sessionId", session._id))
@@ -116,10 +116,31 @@ export const getReview = query({
 				.query("annotations")
 				.withIndex("sessionId", (q) => q.eq("sessionId", session._id))
 				.collect(),
+			ctx.db
+				.query("interviewSegments")
+				.withIndex("sessionId", (q) => q.eq("sessionId", session._id))
+				.collect(),
+			ctx.db
+				.query("interviewRubrics")
+				.withIndex("sessionId", (q) => q.eq("sessionId", session._id))
+				.collect(),
 		]);
 
-		// Keep the client contract explicit: lines are ordered by transcript order.
+		// Return transcript lines in order regardless of query ordering.
 		lines.sort((a, b) => a.order - b.order);
+		// Non-overlapping segments can be ordered by their start.
+		segments.sort((a, b) => a.startOrder - b.startOrder);
+
+		const rubricBySegment = new Map(
+			rubrics.map((rubric) => [rubric.segmentId, rubric]),
+		);
+		// Avoid refetching questions reused by multiple segments.
+		const questionIds = [...new Set(segments.map((s) => s.questionId))];
+		const questionById = new Map(
+			(await Promise.all(questionIds.map((id) => ctx.db.get(id))))
+				.filter((question) => question !== null)
+				.map((question) => [question._id, question]),
+		);
 
 		const nameFor = (userId: Doc<"users">["_id"] | undefined) => {
 			if (userId === undefined) return null;
@@ -187,6 +208,41 @@ export const getReview = query({
 					createdAt: annotation.createdAt,
 				}))
 				.sort((a, b) => a.createdAt - b.createdAt),
+			interviewSegments: segments.map((segment) => {
+				const question = questionById.get(segment.questionId) ?? null;
+				const rubric = rubricBySegment.get(segment._id) ?? null;
+				return {
+					_id: segment._id,
+					questionId: segment.questionId,
+					question:
+						question === null
+							? null
+							: {
+									_id: question._id,
+									topic: question.topic,
+									difficulty: question.difficulty,
+									prompt: question.prompt,
+									tags: question.tags,
+								},
+					startLineId: segment.startLineId,
+					endLineId: segment.endLineId,
+					startOrder: segment.startOrder,
+					endOrder: segment.endOrder,
+					createdAt: segment.createdAt,
+					rubric:
+						rubric === null
+							? null
+							: {
+									_id: rubric._id,
+									structure: rubric.structure,
+									conciseness: rubric.conciseness,
+									tradeoffs: rubric.tradeoffs,
+									vocabulary: rubric.vocabulary,
+									authorName: nameFor(rubric.authorId),
+									updatedAt: rubric.updatedAt,
+								},
+				};
+			}),
 		};
 	},
 });

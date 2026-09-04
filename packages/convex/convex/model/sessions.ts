@@ -48,7 +48,27 @@ export async function requireOwnSession(
 	return { session, userId };
 }
 
-/** The shape an HTTP route maps to a status code. */
+/** Requires a signed-in tutor for content outside a lesson. */
+export async function requireTutor(ctx: QueryCtx): Promise<Doc<"users">> {
+	const user = await requireCurrentUser(ctx);
+	if (user.role !== "tutor") {
+		throw new Error("Only the tutor can do that");
+	}
+	return user;
+}
+
+/** Requires the signed-in user to be the tutor for this lesson. */
+export async function requireSessionTutor(
+	ctx: QueryCtx,
+	sessionId: Id<"lessonSessions">,
+): Promise<{ session: Doc<"lessonSessions">; userId: Id<"users"> }> {
+	const { session, userId } = await requireOwnSession(ctx, sessionId);
+	if (session.tutorId !== userId) {
+		throw new Error("Only the tutor of this lesson can do that");
+	}
+	return { session, userId };
+}
+
 export type StoredFileTarget =
 	| { ok: true; storageId: Id<"_storage">; contentType: string | null }
 	| { ok: false; reason: "unauthenticated" | "forbidden" | "not-found" };
