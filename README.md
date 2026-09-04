@@ -16,6 +16,8 @@ apps/
 packages/
   ui/           # Shared UI components
   convex/       # Convex schema and functions for apps/web
+infra/
+  openpronounce/  # Deployment descriptor for the self-hosted scoring worker
 ```
 
 First time here? See `SETUP.md` for the one-time Convex + Google OAuth

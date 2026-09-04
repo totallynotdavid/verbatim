@@ -574,6 +574,307 @@ written behind the mutations' back: the questions went in through
 `interviewQuestions.create`, the segment through `interviewSegments.create`,
 the feedback through `saveRubric`, all as the tutor's real user id.
 
+## 8. Provision the pronunciation workers
+
+Phase 5 is the first phase that spends real money on someone else's hardware,
+and the first that needs credentials nobody in this repo can create. Until the
+three variables below are set, the feature is inert rather than broken: the
+**Analyse this lesson** button records a run that fails immediately with the
+name of the missing variable, and retry takes are simply not scored.
+
+### 8a. A Replicate API token
+
+Word-level transcription runs on [Replicate's public WhisperX
+model](https://replicate.com/victor-upmeet/whisperx), version-pinned in
+`packages/convex/convex/model/scoring.ts`. Nothing is deployed there; the
+version is public and run on demand.
+
+1. Sign up at [replicate.com](https://replicate.com) and add a billing method.
+   There is no free tier for GPU predictions.
+2. **Account settings → API tokens → Create token.**
+3. ```sh
+   cd packages/convex
+   bunx convex env set REPLICATE_API_TOKEN r8_...
+   ```
+
+**What a pass costs.** The pinned version runs on an Nvidia A40, billed by the
+second while the prediction is alive. WhisperX transcribes at roughly 70×
+real time, so a 45-minute lesson is a couple of minutes of GPU including
+container start, which lands in the region of **$0.10–$0.35 per lesson**.
+Treat that as an order of magnitude, not a quote: Replicate's public pricing
+page no longer lists an A40 line at all (it lists T4, L40S, H100, A100 and
+CPU), so the rate this model bills at is not something this repo can read off
+a page. Run one lesson and look at the invoice before running twenty.
+
+The submitting action sends `Cancel-After: 15m`, so a wedged prediction stops
+billing on Replicate's side even if this deployment never hears from it.
+
+### 8b. A deployed OpenPronounce
+
+Phoneme-level scoring calls a self-hosted
+[OpenPronounce](https://github.com/Halleck45/OpenPronounce) (MIT, CPU-only).
+There is no hosted instance of it anywhere, so this is a container you deploy
+once. `infra/openpronounce/` has the deployment descriptor and the full
+walkthrough; the short version is Modal, because OpenPronounce ships no
+authentication of its own and Modal's proxy auth supplies it without a proxy
+of ours:
+
+```sh
+git clone --depth 1 --branch v0.3.0 https://github.com/Halleck45/OpenPronounce.git
+cp infra/openpronounce/modal_app.py OpenPronounce/
+cd OpenPronounce && modal deploy modal_app.py
+```
+
+Then, from `packages/convex`:
+
+```sh
+bunx convex env set OPENPRONOUNCE_URL https://<workspace>--verbatim-openpronounce.modal.run
+bunx convex env set OPENPRONOUNCE_KEY   <proxy token id>
+bunx convex env set OPENPRONOUNCE_SECRET <proxy token secret>
+```
+
+`OPENPRONOUNCE_URL` is the feature switch. Unset, `retryScoring.score` returns
+without doing anything and no score row is written — which is the correct
+resting state for a deployment that has not provisioned a worker, and is
+verified as such.
+
+Cost here is CPU seconds on a container that scales to zero: a lesson's worth
+of retry takes is a fraction of a cent. The GPU half is the expensive half.
+
+### 8c. The callback shared secret
+
+```sh
+bunx convex env set SCORING_CALLBACK_SECRET "$(openssl rand -hex 32)"
+```
+
+This one is generated, not obtained. Both worker-facing HTTP routes refuse
+every request with 503 until it is set. See "The callback is a new auth
+surface" below for what it actually protects and why the secret itself never
+leaves the deployment.
+
+## What to click through, part six: the automated pass
+
+1. Open a `ready` lesson with a recording, as the **tutor**. There is a fourth
+   tab, **Suggestions**.
+2. Press **Analyse this lesson**. The run card moves through *Starting…* →
+   *Listening to the recording…* → *Reading the transcript…* and lands on
+   *Finished* with a count of what it proposed out of how many words it heard.
+   A pass over a lesson-length file takes a couple of minutes; the page is
+   live, so leave it and come back.
+3. Each proposal is a card: the word in quotes, a draft note, how clearly the
+   model could place that word, and the transcript line it came from. **Confirm
+   as a note** writes it as it stands; **Edit first** opens the ordinary note
+   composer with the draft filled in, so you can rewrite the wording and change
+   the type before it becomes a note; **Dismiss** answers it without writing
+   anything.
+4. Go back to **Transcript**. Words still waiting on you carry a **dashed grey
+   underline**, next to the solid coloured underlines of real notes, and the
+   line's footer says how many are waiting. Confirm one and the dashes turn
+   into a note's own colour.
+5. Sign in as the **student** and open the same lesson. The Suggestions tab
+   tells them their tutor reviews this first, and shows nothing else. Confirmed
+   notes are on the Transcript tab like any other, marked **Confirmed** — a
+   note a machine proposed and a person accepted, which is not the same thing
+   as one the tutor sat down and wrote.
+6. Open the study queue. The confirmed note is there, once. Nothing that was
+   only ever a suggestion is.
+
+For the phoneme half: grade a pronunciation or filler card, record a retry,
+and keep the take. A few seconds later the take grows a score out of 100, what
+the recognizer actually heard, and the words whose sounds went wrong in IPA —
+`hello: /həloʊ/ → /hɛlnoʊ/ 83%`. Nothing there is editable, and nothing there
+feeds the SM-2 grade; the grade is still the student's own answer to "how did
+that go".
+
+## When the automated pass runs, and why it is a button
+
+**Tutor-triggered, from the review page.** Not automatic on every lesson that
+reaches `ready`.
+
+The argument for automatic is latency: the tutor opens a lesson and the
+suggestions are already there. The argument against it is that every pass is a
+real charge on someone's card for a lesson that may never be reviewed, and
+that the output is useless without a tutor anyway — a suggestion nobody
+confirms is not feedback, it is a row. Automatic would spend on every lesson
+to save a wait on the ones that get opened.
+
+The button also gives the tutor the one control that matters here, which is
+*whether the thing runs at all*. That is worth more than two minutes, and it
+is not reversible in the other direction: a deployment that spent money by
+default and let you turn it off has already spent it.
+
+If a later phase wants it automatic, the seam is one line in
+`lessonSessions.attachAudio` — schedule `internal.scoring.submitWhisperx`
+after a run row is inserted, exactly as `scoring.start` does. Make it a
+per-pair setting rather than a global one if you do.
+
+Retry takes are the opposite call: **scored automatically, on save**. That
+half is CPU seconds on a scale-to-zero container, so there is nothing to
+ration, and the moment a student saves a take is the moment they want to know
+how it went.
+
+## Draft annotations: a separate table, not a flag on `annotations`
+
+Nothing a model produces is written to `annotations`. WhisperX output lands in
+`pronunciationSuggestions` with `status: "pending"`, and `annotations` gains a
+row only when `scoring.confirmSuggestion` runs, which is tutor-only and
+promotes by **copying**:
+
+- The suggestion stays, marked `confirmed`, as the record that a machine
+  proposed it and who accepted it.
+- The note it produces carries `source: "auto"`, so a confirmed suggestion
+  never reads as something the tutor sat down and wrote. Notes written by hand
+  carry `source: "tutor"`; notes from before Phase 5 carry nothing and read as
+  `"tutor"`, so the field needed no migration.
+- The review card is created *there*, by the same `createForAnnotation` the
+  tutor's own notes use. That is what keeps drafts out of the study queue and
+  out of the trends view without either of them knowing this phase exists:
+  both read `annotations`, and a draft is not one.
+
+A dismissal is kept rather than deleted, and a second pass over the same
+lesson proposes nothing that already has a suggestion or a note on the same
+span — so re-running is cheap in a tutor's attention as well as being
+idempotent. It is not free in money; the GPU runs again.
+
+There is deliberately **no UI for editing the model's own numbers**. A tutor
+reads the draft and answers it. The confidence is shown because it helps them
+decide, not because it is theirs to adjust.
+
+## The callback is a new auth surface
+
+Every authorization in this codebase until now has answered "which paired user
+is this". Replicate's GPU is not a paired user, holds no Convex Auth JWT, and —
+this is the part that shapes the design — **cannot send a header of your
+choosing on a webhook**. Whatever authorizes it has to travel in the URL.
+
+Putting `SCORING_CALLBACK_SECRET` itself in a URL held by a third party is not
+something to do, so the routes carry a **per-run token derived from it**:
+
+```
+token = HMAC-SHA256(SCORING_CALLBACK_SECRET, "<purpose>:<runId>")
+```
+
+with `purpose` being `callback` or `audio`. That gives four properties worth
+having:
+
+- The secret never leaves this deployment. Replicate holds two derived strings.
+- A token is worth nothing for any other run — a leaked one buys you one
+  finished lesson, not the pipeline.
+- The two routes are separated: the URL Replicate is given to *fetch the audio*
+  is rejected on the route that *posts a result*, and vice versa. Both were
+  verified.
+- Rotating the secret invalidates every token still outstanding. In-flight runs
+  will expire rather than land; that is the intended cost of a rotation.
+
+The check runs before the body is read and before any row is looked up:
+`authorizeRun` in `packages/convex/convex/http.ts` answers 503 when the secret
+is unset, 401 for a missing or wrong token, and only then goes near the
+database. None of this touches the helpers in `model/sessions.ts`, which
+answer a question that has no meaning here.
+
+Replicate retries a webhook it could not deliver, and the expiry timer fires
+regardless, so more than one thing will try to finish any given run. Every
+terminal path is therefore idempotent: `patchRun` refuses to move a run that
+has already finished, `acceptResult` recognises a repeat delivery and deletes
+the bytes it was handed, and the route answers 200 for a duplicate so Replicate
+stops trying.
+
+### Feeding the recording to a GPU without a storage link
+
+WhisperX needs a URL — Replicate asks for URLs above 256 KB, and a lesson is
+megabytes. `ctx.storage.getUrl()` was abandoned in Phase 3 for reasons that
+have not changed, so `/scoring/audio` serves the bytes instead, under the same
+run token, and **only while its run is active**. When the run reaches a
+terminal state the URL stops working — verified in both directions.
+
+Convex caps an HTTP action response at 20 MiB, which at the extension's 32 kbps
+is a little over 90 minutes of lesson. A longer lesson than that cannot be
+analysed as things stand; the fix, if it ever matters, is chunking the
+submission rather than raising a limit that is not ours.
+
+### Where the payload goes
+
+A lesson's word-level output is around a megabyte, which is the entire Convex
+document limit, so the raw prediction output is always stored as a file
+(`pronunciationRuns.resultStorageId`) and read back by an action. The row keeps
+only counts. Same rule on the phoneme side: OpenPronounce returns two
+400-point prosody contours that nothing renders yet, so the whole response goes
+to a file and the score row keeps the score, the transcription and up to twelve
+mispronounced words.
+
+## What "expected text" a segment is compared against
+
+`compare_audio_with_text()` needs the words the audio *should* contain. This
+phase feeds it two different things, and the difference is the interesting part.
+
+**For a retry take — which is what actually runs today — the expected text is
+the words the tutor flagged.** An anchored note names them exactly: the
+character range the tutor underlined against the line's immutable text. A
+line-level note has no range, so the whole utterance is the reference. Both
+paths are verified.
+
+This is the strong case, and it is worth being explicit about why: the
+reference is *not an ASR guess about the audio being scored*. It is what the
+student was asked to say. Comparing a recording against an independent
+statement of the target is exactly the comparison a phoneme scorer is for.
+
+**For a transcript line, the only text available without new tutor input is the
+line's own ASR text**, and that is the right default — it is the recogniser's
+best guess at what was said, which is what a phoneme comparison needs. But the
+tension is real and should not be papered over: **if the ASR mis-transcribed a
+mispronounced word, comparing against its own guess can mask exactly the error
+you are trying to catch.** A student who says "mont" for "month" and is
+transcribed as "mont" scores perfectly against "mont".
+
+Two things blunt it, neither of which is a fix:
+
+- Meet's captions and WhisperX are two different recognisers. Where they
+  disagree, the disagreement is itself a signal, and this phase already uses a
+  weak form of it: a WhisperX word that does not appear in the Meet line
+  becomes a line-level draft rather than an anchored one.
+- The retry path sidesteps it entirely, which is one more reason it is the leg
+  that is wired.
+
+The real fix needs a reference the tutor states rather than one a machine
+guesses — an expected phrase on the annotation, typed once when the note is
+written. That is a small schema addition and a small form change, and it is
+the right first thing for a later phase to do here.
+
+## The lesson-line clip path is not wired, and why
+
+OpenPronounce loads the whole waveform and performs unchunked inference. A
+lesson recording must never reach it; it has to be fed one segment at a time.
+
+Cutting a segment out of the lesson recording needs a decoder. The recording is
+WebM/Opus written by `MediaRecorder`: a byte range of it is not a decodable
+file, and neither Convex runtime can demux and re-encode one — the default
+runtime has no WebAssembly, and the Node runtime has no `ffmpeg`. Convex can
+hand a whole stored file to a worker, which is what both legs of this phase do.
+It cannot produce a smaller one.
+
+So the segment-sized audio this product actually holds is the thing it already
+records per phrase: **`retryRecordings`**. That is what the OpenPronounce leg
+runs on, and the driver is written over `{ storageId, expectedText }` precisely
+so that a lesson-line clip, when one exists, is the same call.
+
+Three ways to make one exist, in the order I would try them:
+
+1. **Capture per-line clips at record time.** The extension already has the
+   audio in an offscreen document and already knows the caption boundaries.
+   Cutting there is cheap and needs no server-side decoder at all. It changes
+   the capture format, which is why it is not a Phase 5 change.
+2. **A slicing sidecar** next to the OpenPronounce container: `ffmpeg -ss -t`
+   behind one endpoint. Twenty lines, but a second service to deploy, secure and
+   keep alive, and the brief for this phase was explicit about deploying
+   OpenPronounce's own container rather than a fork or a wrapper.
+3. **A WASM demux in a Node action.** Possible, and the most fragile of the
+   three: a Matroska demuxer plus an Opus decoder plus a resampler, holding a
+   whole lesson in an action's memory, to produce something ffmpeg does in one
+   line.
+
+Until one of those lands, the automated pass over a lesson is WhisperX only —
+which is the half that produces the drafts a tutor reviews, and is complete.
+
 ## Serving lesson audio: an authenticated route, not a storage link
 
 `ctx.storage.getUrl()` is the obvious way to hand a file to a browser, and it
@@ -875,6 +1176,117 @@ of it correctness:
 - **The question bank page at narrow widths**, the wrapping of the topic and
   difficulty chip rows, and **dark mode**, which again nothing here rendered.
 
+## What Phase 5 could not verify without credentials
+
+Phase 5 is the first phase whose verification costs money, and none of the
+three credentials it needs existed while it was written. So the plumbing was
+verified exhaustively and the workers were not called once.
+
+**How it was verified.** Not against the dev deployment: against a throwaway
+`convex-local-backend` (the open-source binary, SQLite, no account, no
+network), with the real schema and the real functions pushed to it, driven by
+`ConvexHttpClient` impersonating the seeded tutor's and student's real user
+ids, and by `curl`-equivalent requests to the real HTTP actions. The workers
+were stood in for: a hand-written WhisperX payload posted to the real callback
+route, and a stub HTTP server standing in for OpenPronounce. **80 assertions,
+all passing.** The scaffolding was thrown away; nothing test-only was left in
+the repo.
+
+What that covered:
+
+- **The whole enqueue-and-callback chain**, end to end and in that order:
+  `scoring.start` → the scheduled action → the run-scoped audio URL → the
+  callback HTTP action → `acceptResult` → `buildSuggestions` →
+  `saveSuggestions` → a completed run with drafts in it.
+- **The callback's auth, before anything else runs.** No token, wrong token,
+  the audio token replayed on the callback route, the callback token replayed
+  on the audio route, a valid token for a run that does not exist, and both
+  routes with `SCORING_CALLBACK_SECRET` unset. 401, 401, 401, 401, 404, 503.
+- **The audio route's lifetime.** It serves the recording with the right
+  content type while its run is active and 404s once the run has finished.
+- **Idempotency.** A repeat delivery of the same prediction is answered 200 and
+  changes nothing, including deleting the bytes it was handed. A delivery that
+  arrives after the expiry timer has failed the run is dropped the same way.
+- **The word-to-line mapping**, which is where the real bugs would be:
+  timestamps offset by `audioOffsetMs`; punctuation stripped, so `supportive,`
+  and `thinking.` anchor to the bare words; a word the Meet captions do not
+  contain becoming a line-level draft; one-letter words dropped; words above
+  the confidence threshold dropped; words the aligner could not place (no
+  `score`) dropped but still counted; the tutor's own low-confidence words
+  ignored entirely; and a word sitting nearer the tutor's caption than the
+  student's dropped rather than pulled across the turn boundary.
+- **That the pipeline writes no notes.** After a completed run: four
+  suggestions, zero annotations, zero review cards.
+- **The draft state machine.** The student is refused on confirm; the tutor
+  confirms and gets exactly one note, marked `source: "auto"`, keeping the
+  draft's word range, owned by the tutor who confirmed it, with exactly one
+  review card; a draft cannot be confirmed twice; a rewritten note and a
+  changed type are what get saved; dismissing writes nothing and keeps the row;
+  a second pass proposes zero of the four it proposed the first time.
+- **Who sees what.** The tutor's `getReview` returns only drafts nobody has
+  acted on, plus the confirmed/dismissed tally. The student's returns no drafts
+  and no run at all, but does return the confirmed notes with their `source`.
+- **Expiry and cancellation.** An unanswered run expires with an explanation
+  and frees the lesson; cancelling does the same immediately.
+- **The OpenPronounce leg against a stub.** With no `OPENPRONOUNCE_URL` set, a
+  saved take produces no row and no error. With it set: one POST to
+  `/pronunciation` with the trailing slash trimmed, `expected_text` equal to the
+  tutor's anchored quote (and equal to the whole line for a line-level note),
+  `lang=en`, the take as a file part, and the Modal proxy-auth headers present.
+  The score, the transcription and the mispronounced words land on the row, the
+  full response goes to a file, and the study queue query carries all of it.
+  A 500 from the worker is recorded on the take rather than thrown at the
+  student.
+- **The delete cascade.** Deleting a take deletes its score. Deleting the note
+  deletes the card, the takes and their scores.
+
+### What David has to do before any of this touches a real worker
+
+1. Create a Replicate account with billing and a token (§8a).
+2. Deploy OpenPronounce and create a Modal proxy token pair (§8b).
+3. Generate the callback secret (§8c).
+
+None of the three can be provisioned from here.
+
+### What is therefore unverified
+
+- **Any real call to Replicate.** The request body is built from the model's
+  current published schema — `audio_file`, `language`, `align_output`,
+  `diarization`, read off `replicate.com/victor-upmeet/whisperx` on 2026-09-04
+  — and the version is pinned to `655845d6…` (published 2026-05-13). The
+  webhook body is parsed as the documented prediction object. All of that is
+  read from documentation, not from a response. **The first real pass is the
+  test**, and it is the one to watch: check that `align_output: true` actually
+  produced `words` with `score` on every segment, and that the run completes
+  rather than failing on "returned no aligned segments".
+- **Whether the confidence threshold is set anywhere near right.** `0.35` is a
+  judgement about a distribution nobody in this repo has seen. It is one
+  constant in `model/scoring.ts` with the reasoning next to it. Expect to move
+  it after the first two real lessons, and expect to move it *down* if the tutor
+  is drowning.
+- **Whether the flags are any good.** Alignment confidence is not a
+  pronunciation judgement — it is how surely the model could place a word — and
+  a noisy line will score low without anyone having mispronounced anything.
+  This is exactly why the output is a draft. How much of it is worth confirming
+  is a question only a tutor with a real lesson can answer.
+- **The real cost of a pass.** See §8a: the public pricing page no longer lists
+  the hardware this model runs on. The figure there is an estimate.
+- **Everything about the deployed OpenPronounce container**: that the Modal
+  descriptor deploys, that a ~6 GB image cold-starts inside the 300-second
+  startup timeout, that 8 GB and two cores are enough for two Wav2Vec2
+  checkpoints, and that its gTTS reference voice — which needs the network the
+  first time it sees a given sentence — behaves inside a Modal container. The
+  request and response shapes were taken from `server.py` and
+  `openpronounce/speech.py` at tag `v0.3.0` and exercised against a stub that
+  returns exactly that shape.
+- **Every pixel.** Nothing here rendered anything. The Suggestions tab, the run
+  card's four states, the dashed grey underline sitting next to the six solid
+  coloured ones (does it read as "not yet" or as "broken"?), the score readout
+  under a take with two IPA columns at narrow widths, the popover placement on
+  **Edit first**, and dark mode, which again nothing rendered.
+- **What a two-minute wait feels like.** The run card is live and the tutor can
+  walk away, but nobody has watched it.
+
 ## Design tokens: the Phase 0 port still matches
 
 The brief asked whether reloop's `packages/tailwind/style.css` had drifted
@@ -889,6 +1301,60 @@ needed was missing.
 
 ## Notes for later phases
 
+- Phase 5 added three tables and one optional field. `annotations.source` is
+  `"tutor" | "auto"`, optional so it needed no migration; anything that writes an
+  annotation from now on has to say which it is. `scoring.confirmSuggestion` is
+  the only writer of `"auto"`, and it is the only path from any model's output
+  into `annotations`.
+- `pronunciationSuggestions` is deliberately not "annotations with a status".
+  The study queue, the trends view and the student's own review all read
+  `annotations` and none of them know this phase exists, which is the property
+  worth keeping. A sixth kind of machine output should be a fifth row in that
+  table, not a seventh annotation type.
+- Phase 4's note asked Phase 5 to keep rubric feedback out of `annotations`, and
+  suggested that machine output beside a rubric should be "a second row per
+  segment marked as machine-authored that the tutor confirms". That is exactly
+  the shape `pronunciationSuggestions` has, minus the segment link. A phase that
+  wants machine-drafted rubric feedback should add
+  `interviewRubricSuggestions` alongside it rather than widening this table —
+  the two promote into different places.
+- `/scoring/whisperx` and `/scoring/audio` are the first routes in this codebase
+  that authorize something that is not a person. Do not reach for
+  `model/sessions.ts` when adding a third; use `authorizeRun` in `http.ts` and
+  give the new route its own `purpose` string, so a token minted for one route is
+  useless on another.
+- The run token is derived from `SCORING_CALLBACK_SECRET` and never stored.
+  Rotating the secret is therefore a real operation with a real cost: every run
+  in flight will expire rather than land. That is the intended trade — the
+  alternative was a stored per-run nonce that a rotation would not touch.
+- **Nothing can cut the lesson recording into per-line clips.** This is the one
+  thing the phase wanted and could not build; "The lesson-line clip path is not
+  wired" above has the three ways out and which one to try first. If a later
+  phase makes clips exist, `internal.retryScoring.score` is written over
+  `{ storageId, expectedText }` and needs no change — write a sibling action that
+  hands it a clip.
+- The expected text a phoneme comparison uses is an ASR guess for a transcript
+  line and the tutor's own flagged words for a retry take. The second is sound;
+  the first can mask the very error it is looking for. The fix is an expected
+  phrase typed on the annotation, not a cleverer default. See "What 'expected
+  text' a segment is compared against".
+- `LOW_CONFIDENCE`, `MIN_WORD_LENGTH` and `MAX_SUGGESTIONS_PER_RUN` in
+  `model/scoring.ts` are the three knobs that decide how much a tutor is asked to
+  read. They are constants with their reasoning next to them rather than
+  settings, because a per-pair setting for something nobody has calibrated once
+  is a knob with no right answer. Calibrate them, then decide whether they should
+  be settings.
+- `WHISPERX_VERSION` is pinned. The model's author has re-pointed it at new base
+  images before, and a silent change to the aligner is a silent change to which
+  words this product flags. Bump it on purpose, and re-read the output shape when
+  you do — this phase already depends on `words[].score` existing, which only
+  appears when `align_output` is true.
+- Replicate predictions are created with `Cancel-After: 15m`, and this
+  deployment gives up on a run after 30 minutes. Those two numbers should stay
+  in that order.
+- Retry takes are scored automatically and lesson passes are not. If that ever
+  looks inconsistent, the difference is that one is CPU cents on a container that
+  scales to zero and the other is GPU minutes billed by the second.
 - `reviewCards` is no longer empty: `annotations.create` writes one card per
   note and `annotations.remove` deletes it. Any new annotation-shaped thing
   has to decide whether it belongs in the queue, rather than assuming the
@@ -928,7 +1394,13 @@ needed was missing.
 - Function history, so a later phase does not have to read the log:
   `transcriptLines.append` landed in Phase 1a; `annotations.create`, `update`
   and `remove` in Phase 2; `reviewCards.queue`/`grade`/`backfill`,
-  `retryRecordings.*` and `trends.forCurrentPair` in Phase 3.
+  `retryRecordings.*` and `trends.forCurrentPair` in Phase 3;
+  `interviewQuestions.*` and `interviewSegments.*` in Phase 4; `scoring.*`,
+  `retryScoring.*` and the `/scoring/*` HTTP routes in Phase 5. Phase 5 also moved `normalizeNote`
+  and `normalizeRange` out of `annotations.ts` into
+  `packages/convex/convex/model/annotations.ts`, because `confirmSuggestion`
+  writes annotations too and a promoted note has to be exactly as well-formed as
+  a typed one.
 - `trends.forCurrentPair` reads every transcript line of every lesson on every
   call. It is honest and cheap at a lesson a week; it is the first query that
   will want a scheduled rollup, and the spec already names scheduled functions
