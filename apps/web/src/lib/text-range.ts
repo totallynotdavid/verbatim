@@ -19,11 +19,9 @@ export function trimRange(text: string, range: TextRange): TextRange | null {
 export type Segment<T> = {
 	text: string;
 	start: number;
-	/** Ranges covering this segment. */
 	covering: T[];
 };
 
-/** Splits text wherever highlight coverage changes. */
 export function segmentText<T extends TextRange>(
 	text: string,
 	ranges: readonly T[],
@@ -63,10 +61,7 @@ export function segmentText<T extends TextRange>(
 	return segments;
 }
 
-/**
- * Converts the current selection to offsets within `container`.
- * Returns null for an empty or cross-container selection.
- */
+/** Returns offsets for a non-empty selection wholly inside `container`. */
 export function selectionOffsetsWithin(
 	container: HTMLElement,
 ): TextRange | null {
@@ -88,4 +83,44 @@ export function selectionOffsetsWithin(
 	const start = preceding.toString().length;
 
 	return { start, end: start + range.toString().length };
+}
+
+/**
+ * Returns selected transcript line ids inside `container`.
+ * Line ids come from each conversation item's data attribute.
+ */
+export function selectionLineIdsWithin(container: HTMLElement): string[] | null {
+	const selection = window.getSelection();
+	if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+		return null;
+	}
+	const range = selection.getRangeAt(0);
+	if (
+		!container.contains(range.startContainer) ||
+		!container.contains(range.endContainer)
+	) {
+		return null;
+	}
+
+	const lineIds: string[] = [];
+	for (const item of container.querySelectorAll<HTMLElement>(
+		"[data-conversation-item]",
+	)) {
+		const id = item.dataset.conversationItem;
+		if (id === undefined) continue;
+
+		// Require overlapping text so an edge-only touch does not select the line.
+		const overlap = document.createRange();
+		overlap.selectNodeContents(item);
+		if (range.compareBoundaryPoints(Range.START_TO_START, overlap) > 0) {
+			overlap.setStart(range.startContainer, range.startOffset);
+		}
+		if (range.compareBoundaryPoints(Range.END_TO_END, overlap) < 0) {
+			overlap.setEnd(range.endContainer, range.endOffset);
+		}
+		if (overlap.toString().trim() !== "") {
+			lineIds.push(id);
+		}
+	}
+	return lineIds.length === 0 ? null : lineIds;
 }

@@ -3,20 +3,28 @@
 import { useAuthToken } from "@convex-dev/auth/react";
 import { api } from "@verbatim/backend/convex/_generated/api";
 import type { Id } from "@verbatim/backend/convex/_generated/dataModel";
+import * as Button from "@verbatim/ui/button";
 import * as Conversation from "@verbatim/ui/conversation";
 import * as DetailView from "@verbatim/ui/detail-view";
+import * as Popover from "@verbatim/ui/popover";
 import * as TabMenu from "@verbatim/ui/tab-menu-horizontal";
-import { useQuery } from "convex/react";
-import { ArrowLeft, MessageSquareText, ScrollText } from "lucide-react";
+import { useMutation, useQuery } from "convex/react";
+import { ArrowLeft, ClipboardList, MessageSquareText, ScrollText, Tag } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SessionStatusBadge } from "@/components/session-status-badge";
 import { formatClock, formatLength } from "@/lib/clip";
+import { interviewTopic } from "@/lib/interview-types";
+import { selectionLineIdsWithin } from "@/lib/text-range";
 import { useClipPlayer } from "@/lib/use-clip-player";
 import { AnnotationCard } from "./annotation-card";
 import { AudioPanel } from "./audio-panel";
+import { InterviewPanel } from "./interview-panel";
+import { QuestionPicker } from "./question-picker";
 import { TranscriptLine } from "./transcript-line";
-import type { ReviewAnnotation } from "./types";
+import type { ReviewAnnotation, ReviewSegment } from "./types";
+
+type Tab = "transcript" | "notes" | "interview";
 
 const DAY = new Intl.DateTimeFormat(undefined, {
 	weekday: "long",
@@ -34,11 +42,20 @@ export function ReviewView({ sessionId }: { sessionId: string }) {
 		sessionId: sessionId as Id<"lessonSessions">,
 	});
 
-	const [tab, setTab] = useState<"transcript" | "notes">("transcript");
+	const createSegment = useMutation(api.interviewSegments.create);
+
+	const [tab, setTab] = useState<Tab>("transcript");
 	const [activeLineId, setActiveLineId] = useState<string | null>(null);
+	const [lineSelection, setLineSelection] = useState<string[] | null>(null);
+	const [tagging, setTagging] = useState(false);
+	const [tagPending, setTagPending] = useState(false);
+	const [tagError, setTagError] = useState<string | null>(null);
+	const transcriptRef = useRef<HTMLDivElement>(null);
 
 	const lines = useMemo(() => review?.lines ?? [], [review]);
-	// The audio route reauthorizes this short-lived token on every download.
+	const segments = useMemo(() => review?.interviewSegments ?? [], [review]);
+	const isTutor = review?.session.viewerRole === "tutor";
+	// HTTP audio requests reauthorize this short-lived token.
 	const authToken = useAuthToken();
 	const player = useClipPlayer({
 		url: review?.audio?.url ?? null,
@@ -47,11 +64,37 @@ export function ReviewView({ sessionId }: { sessionId: string }) {
 		durationMs: review?.audio?.durationMs ?? null,
 	});
 
-	// Keep callback dependencies stable when the player object changes.
 	const { play, stop, playing, clipFor } = player;
 
 	const activeIndex = lines.findIndex((line) => line._id === activeLineId);
 	const activeLine = activeIndex >= 0 ? (lines[activeIndex] ?? null) : null;
+
+	const segmentByLineId = useMemo(() => {
+		const map = new Map<string, ReviewSegment>();
+		for (const line of lines) {
+			const segment = segments.find(
+				(candidate) =>
+					candidate.startOrder <= line.order && candidate.endOrder >= line.order,
+			);
+			if (segment) map.set(line._id, segment);
+		}
+		return map;
+	}, [lines, segments]);
+
+	/** Reads selected transcript lines for tutor-only tagging. */
+	const readLineSelection = useCallback(() => {
+		if (!isTutor) return;
+		const container = transcriptRef.current;
+		const selected = container ? selectionLineIdsWithin(container) : null;
+		// Single-line selections belong to the annotation composer.
+		setLineSelection(selected !== null && selected.length >= 2 ? selected : null);
+	}, [isTutor]);
+
+	const clearLineSelection = useCallback(() => {
+		setLineSelection(null);
+		setTagError(null);
+		window.getSelection()?.removeAllRanges();
+	}, []);
 
 	const byLine = useMemo(() => {
 		const grouped = new Map<string, ReviewAnnotation[]>();
@@ -176,7 +219,7 @@ export function ReviewView({ sessionId }: { sessionId: string }) {
 			>
 				<TabMenu.Root
 					value={tab}
-					onValueChange={(value) => setTab(value as "transcript" | "notes")}
+					onValueChange={(value) => setTab(value as Tab)}
 				>
 					<TabMenu.List className="h-10 gap-5 border-none">
 						<TabMenu.Trigger value="transcript" className="h-10 cursor-pointer gap-1.5">
@@ -192,11 +235,19 @@ export function ReviewView({ sessionId }: { sessionId: string }) {
 								</span>
 							) : null}
 						</TabMenu.Trigger>
+						<TabMenu.Trigger value="interview" className="h-10 cursor-pointer gap-1.5">
+							<TabMenu.Icon as={ClipboardList} className="size-4" />
+							Interview
+							{segments.length > 0 ? (
+								<span className="ml-0.5 rounded-full bg-bg-weak-50 px-1.5 py-0.5 label-xs text-text-sub-600">
+									{segments.length}
+								</span>
+							) : null}
+						</TabMenu.Trigger>
 					</TabMenu.List>
 				</TabMenu.Root>
 			</DetailView.Header>
 
-				{/* Playback is limited to the selected clip, so native controls stay hidden. */}
 			<audio
 				ref={player.audioRef}
 				preload="auto"
@@ -222,34 +273,106 @@ export function ReviewView({ sessionId }: { sessionId: string }) {
 								</p>
 							</div>
 						) : (
+							// Read the selection before the action bar can clear it.
 							<Conversation.Root
+								ref={transcriptRef}
+								onMouseUp={readLineSelection}
+								onKeyUp={readLineSelection}
 								label="Lesson transcript"
 								followId={activeLineId}
 								jumpLabel="Jump to the line you are on"
 							>
 								{lines.map((line, index) => {
 									const previous = lines[index - 1];
+									const segment = segmentByLineId.get(line._id);
 									return (
-										<TranscriptLine
-											key={line._id}
-											sessionId={session._id}
-											line={line}
-											annotations={byLine.get(line._id) ?? []}
-											mine={line.speakerId === session.viewerId}
-											startsGroup={
-												previous === undefined ||
-												previous.speakerName !== line.speakerName
-											}
-											speakerName={line.speakerName ?? "Unknown speaker"}
-											active={line._id === activeLineId}
-											playing={player.playing && player.activeKey === line._id}
-											audioAvailable={clipFor(line).available}
-											onSelect={selectLine}
-										/>
+										<Fragment key={line._id}>
+											{segment && segment.startLineId === line._id ? (
+												<SegmentMarker
+													segment={segment}
+													onOpen={() => setTab("interview")}
+												/>
+											) : null}
+											<TranscriptLine
+												sessionId={session._id}
+												line={line}
+												annotations={byLine.get(line._id) ?? []}
+												mine={line.speakerId === session.viewerId}
+												startsGroup={
+													previous === undefined ||
+													previous.speakerName !== line.speakerName
+												}
+												speakerName={line.speakerName ?? "Unknown speaker"}
+												active={line._id === activeLineId}
+												playing={player.playing && player.activeKey === line._id}
+												audioAvailable={clipFor(line).available}
+												inSegment={segment !== undefined}
+												onSelect={selectLine}
+											/>
+										</Fragment>
 									);
 								})}
 							</Conversation.Root>
 						)}
+
+						{lineSelection !== null ? (
+							<div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-stroke-soft-200 border-t px-4 py-2.5">
+								<p className="paragraph-xs text-text-sub-600">
+									{lineSelection.length} lines selected
+								</p>
+								<div className="flex items-center gap-2">
+									<Popover.Root open={tagging} onOpenChange={setTagging}>
+										<Popover.Trigger asChild>
+											<Button.Root size="xxsmall">
+												<Button.Icon as={Tag} />
+												Tag as interview answer
+											</Button.Root>
+										</Popover.Trigger>
+										<Popover.Content align="end" side="top" showArrow={false}>
+											<QuestionPicker
+												title="Which question does this answer?"
+												pending={tagPending}
+												error={tagError}
+												onCancel={() => setTagging(false)}
+												onPick={(questionId) => {
+													const startLineId = lineSelection.at(0);
+													const endLineId = lineSelection.at(-1);
+													if (!startLineId || !endLineId) return;
+													setTagPending(true);
+													setTagError(null);
+													createSegment({
+														sessionId: session._id,
+														questionId,
+														startLineId: startLineId as Id<"transcriptLines">,
+														endLineId: endLineId as Id<"transcriptLines">,
+													})
+														.then(() => {
+															setTagging(false);
+															clearLineSelection();
+														})
+														.catch((cause: unknown) =>
+															setTagError(
+																cause instanceof Error
+																	? cause.message
+																	: "Could not tag those lines",
+															),
+														)
+														.finally(() => setTagPending(false));
+												}}
+											/>
+										</Popover.Content>
+									</Popover.Root>
+									<Button.Root
+										size="xxsmall"
+										variant="neutral"
+										mode="stroke"
+										onClick={clearLineSelection}
+									>
+										Clear
+									</Button.Root>
+								</div>
+							</div>
+						) : null}
 					</DetailView.Main>
 
 					<DetailView.Side>
@@ -302,6 +425,16 @@ export function ReviewView({ sessionId }: { sessionId: string }) {
 						</DetailView.Card>
 					</DetailView.Side>
 				</DetailView.Split>
+			) : tab === "interview" ? (
+				<InterviewPanel
+					segments={segments}
+					lines={lines}
+					isTutor={isTutor}
+					onJump={(lineId) => {
+						setTab("transcript");
+						selectLine(lineId);
+					}}
+				/>
 			) : (
 				<div className="min-h-0 flex-1 overflow-y-auto p-4">
 					<div className="mx-auto flex w-full max-w-2xl flex-col gap-3">
@@ -343,5 +476,30 @@ export function ReviewView({ sessionId }: { sessionId: string }) {
 				</div>
 			)}
 		</DetailView.Root>
+	);
+}
+
+function SegmentMarker({
+	segment,
+	onOpen,
+}: {
+	segment: ReviewSegment;
+	onOpen: () => void;
+}) {
+	const topic = segment.question ? interviewTopic(segment.question.topic) : null;
+	return (
+		<button
+			type="button"
+			onClick={onOpen}
+			className="mt-4 flex w-full cursor-pointer items-center gap-2 rounded-lg bg-bg-weak-50 px-3 py-1.5 text-left transition-colors first:mt-0 hover:bg-bg-soft-200/60"
+		>
+			<Tag className="size-3 shrink-0 text-text-soft-400" />
+			<span className="shrink-0 subheading-2xs text-text-soft-400 uppercase">
+				{topic?.label ?? "Interview"}
+			</span>
+			<span className="min-w-0 flex-1 truncate paragraph-xs text-text-sub-600">
+				{segment.question?.prompt ?? "Tagged interview answer"}
+			</span>
+		</button>
 	);
 }

@@ -24,19 +24,19 @@ export function TranscriptLine({
 	active,
 	playing,
 	audioAvailable,
+	inSegment,
 	onSelect,
 }: {
 	sessionId: ReviewData["session"]["_id"];
 	line: ReviewLine;
 	annotations: ReviewAnnotation[];
-	/** Whether this line belongs to the current user. */
 	mine: boolean;
 	startsGroup: boolean;
 	speakerName: string;
 	active: boolean;
 	playing: boolean;
-	/** Whether this line overlaps the recording. */
 	audioAvailable: boolean;
+	inSegment?: boolean;
 	onSelect: (lineId: string) => void;
 }) {
 	const create = useMutation(api.annotations.create);
@@ -60,10 +60,14 @@ export function TranscriptLine({
 		setComposing(true);
 	}
 
-	/** A selection opens annotation. A plain click starts playback. */
 	function handleTextClick() {
 		const container = textRef.current;
 		const selected = container ? selectionOffsetsWithin(container) : null;
+		// Cross-line selections belong to interview segment tagging.
+		const selection = window.getSelection();
+		if (selected === null && selection !== null && !selection.isCollapsed) {
+			return;
+		}
 		const trimmed = selected ? trimRange(line.text, selected) : null;
 		onSelect(line._id);
 		if (trimmed) openComposer(trimmed);
@@ -89,15 +93,15 @@ export function TranscriptLine({
 						mine={mine}
 						active={active}
 						aria-current={active ? "true" : undefined}
+						className={cn(inSegment && !active && "ring-warning-light")}
 					>
-						{/* Keep text selectable. The footer carries the keyboard controls. */}
 						<p
 							ref={textRef}
 							onClick={handleTextClick}
 							className="cursor-pointer whitespace-pre-wrap break-words"
 						>
 							{segments.map((segment) => {
-									// Use the first note's colour for overlaps. Render all notes below.
+								// Overlaps use the first note's underline color.
 								const covering = segment.covering[0];
 								return covering ? (
 									<span
