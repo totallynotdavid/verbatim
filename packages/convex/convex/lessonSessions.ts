@@ -8,10 +8,12 @@ import {
 	type QueryCtx,
 } from "./_generated/server";
 import {
+	authorizeStoredFile,
 	LESSON_AUDIO_PATH,
 	loadParticipants,
 	requireCurrentUser,
 	requireOwnSession,
+	type StoredFileTarget,
 } from "./model/sessions";
 
 async function requirePairedUser(ctx: QueryCtx): Promise<{
@@ -197,41 +199,17 @@ export const audioRequestTarget = internalQuery({
 	args: {
 		sessionId: v.string(),
 	},
-	handler: async (
-		ctx,
-		args,
-	): Promise<
-		| { ok: true; storageId: Id<"_storage">; contentType: string | null }
-		| { ok: false; reason: "unauthenticated" | "forbidden" | "not-found" }
-	> => {
-		const userId = await getAuthUserId(ctx);
-		if (userId === null) {
-			return { ok: false, reason: "unauthenticated" };
-		}
-
-		const sessionId = ctx.db.normalizeId("lessonSessions", args.sessionId);
-		if (sessionId === null) {
-			return { ok: false, reason: "not-found" };
-		}
-		const session = await ctx.db.get(sessionId);
-		if (session === null) {
-			return { ok: false, reason: "not-found" };
-		}
-		if (session.tutorId !== userId && session.studentId !== userId) {
-			// Return 403 only after authentication, without exposing session membership.
-			return { ok: false, reason: "forbidden" };
-		}
-		if (session.audioStorageId === undefined) {
-			return { ok: false, reason: "not-found" };
-		}
-
-		const metadata = await ctx.db.system.get(session.audioStorageId);
-		return {
-			ok: true,
-			storageId: session.audioStorageId,
-			contentType: metadata?.contentType ?? null,
-		};
-	},
+	handler: async (ctx, args): Promise<StoredFileTarget> =>
+		authorizeStoredFile(ctx, async () => {
+			const sessionId: Id<"lessonSessions"> | null = ctx.db.normalizeId(
+				"lessonSessions",
+				args.sessionId,
+			);
+			if (sessionId === null) return null;
+			const session = await ctx.db.get(sessionId);
+			if (session === null) return null;
+			return { session, storageId: session.audioStorageId };
+		}),
 });
 
 /** Checks both users' current consent before creating a session. */

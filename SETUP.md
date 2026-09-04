@@ -222,6 +222,247 @@ drive the ordinary Phase 1 mutations (`startSession`, `transcriptLines.append`,
 `finishCapture`, `generateAudioUploadUrl`, `attachAudio`) rather than writing
 rows behind the pipeline's back. A real Meet call produces the same shape.
 
+## What to click through, part four: the study loop
+
+Phase 3 adds two routes and a sidebar entry each: **Review**
+(`/dashboard/review`) and **Trends** (`/dashboard/trends`). Neither needs the
+extension.
+
+1. Open **Review**. It shows one card at a time: the flagged transcript line
+   (with the underlined word range, if the note had one), the note itself, the
+   original clip on the left, and your own retry on the right.
+2. **Play original.** The card's clip comes out of *that lesson's* recording,
+   with the same 250 ms padding as the transcript viewer. `space` replays it.
+3. **Record a retry** — on a **pronunciation** or **filler** card; the other
+   four types show the original clip full width and no recorder (see below).
+   The browser asks for the microphone the first time — this is the
+   *website's* permission prompt, nothing to do with the extension's. Say the
+   sentence, press **Stop**, listen to the take in the preview player, then
+   **Keep this take** or **Discard**.
+4. A kept take is listed under **Your retry**. Click `take 1` to hear it; click
+   the original again to compare. Only whoever recorded a take can delete it —
+   your partner can hear it but not remove it.
+5. **Grade the card**: Again / Hard / Good / Easy, or the keys `1`–`4`. The
+   card disappears from today's queue and comes back on the schedule the
+   algorithm picks. The header counts down `n of m done today`.
+6. When the queue empties it says so and tells you when the next card is due.
+7. Open **Trends**. Recurring flagged words and sounds at the top (only things
+   flagged more than once), then words-per-minute and filler rate per lesson,
+   then a table of every lesson with its note breakdown. Every row links back
+   to the transcript it came from.
+
+### The spaced-repetition algorithm: SM-2, unmodified
+
+`packages/convex/convex/model/scheduling.ts` implements SM-2 as published,
+checked against the reference Delphi source at
+`super-memory.com/english/ol/sm2source.htm` and against the `supermemo` npm
+package's TypeScript port (`VienDinhCom/supermemo`, `src/main.ts`), not against
+a summary of it:
+
+- Intervals are 1 day, then 6 days, then `round(interval * ease)`.
+- Ease starts at 2.5, moves by `0.1 - (5 - grade) * (0.08 + (5 - grade) * 0.02)`
+  after **every** review, and is floored at 1.3.
+- A grade below 3 restarts the sequence: interval back to 1 day, repetition
+  count back to zero.
+
+The only thing this repo adds is turning an interval in days into an absolute
+`dueAt`, because cards are stored with a due date rather than a "days since
+last seen" counter.
+
+**Four buttons, not a 0-5 self-rating.** SM-2's input is a six-point scale that
+nobody can apply honestly to their own pronunciation. The UI uses Anki's
+collapse — one failing button, three passing ones — mapped to grades 2, 3, 4
+and 5. **Again is 2 rather than 0** on purpose: 2 is still inside SM-2's
+failure band, so the card restarts either way, but it costs 0.32 of ease
+instead of 0.8. A student who cannot yet produce a sound their tutor only just
+flagged is the expected case, not a memory blackout, and two blackouts would
+otherwise pin a card at the 1.3 floor permanently. The mapping is one table in
+`apps/web/src/lib/review-grades.ts`.
+
+**A failed card comes back tomorrow, not in ten minutes.** SM-2 has no
+intra-day learning steps and none were invented here. If same-session re-drills
+turn out to matter, that is a deliberate departure from the algorithm to make
+later, not something to slip in now.
+
+**One note is one card, written by one mutation.** `annotations.create` inserts
+the `reviewCards` row itself, in the same transaction. There is no second call
+to forget, no queue entry without a note, and no note without a queue entry.
+`annotations.remove` deletes the card and every retry recorded against it,
+including the stored bytes. Editing a note's text or type does *not* reschedule
+its card — the thing being remembered has not changed.
+
+**A new card is due immediately**, so a note the tutor writes during a lesson is
+in the student's queue that evening.
+
+**Schema.** `reviewCards` kept `sessionId`, `sourceAnnotationId`, `dueAt`,
+`interval` and `ease`, and gained `studentId`, `repetitions`, `lapses`,
+`lastReviewedAt` and `lastGrade`. `repetitions` is not optional decoration:
+SM-2's ladder is driven by the consecutive-pass count, and it cannot be
+recovered from the interval. The old global `dueAt` index is gone, replaced by
+`studentId_dueAt` — a bare `dueAt` index would have walked every pair's cards
+to find one learner's.
+
+### Backfilling cards for notes written before Phase 3
+
+Annotations that already existed have no card, because nothing wrote one at the
+time. One internal mutation fixes that, and it is safe to run more than once:
+
+```sh
+cd packages/convex
+bunx convex run reviewCards:backfill
+```
+
+It skips annotations that already have a card and reports
+`{ created, skipped }`. Backfilled cards are due immediately, like a note
+written today.
+
+### Retry recordings: the website's microphone, not the extension's
+
+This is the second real-microphone surface in the product and it has nothing in
+common with the first. The extension records a Meet tab through
+`chrome.tabCapture` in an offscreen document; the retry flow is
+`getUserMedia({ audio: true })` plus a `MediaRecorder` in an ordinary tab
+(`apps/web/src/lib/use-mic-recorder.ts`). The permission prompt is against the
+website's origin, so granting it to the extension does nothing here and vice
+versa.
+
+- **Each take is its own row.** `retryRecordings` (reviewCardId, annotationId,
+  storageId, recordedBy, durationMs, createdAt). Nothing is spliced into the
+  lesson audio: the lesson recording stays the record of what was actually
+  said, and a retry is a separate artifact next to it.
+- **Duration is measured while recording**, not read back from the file, for
+  the same reason `lessonSessions.audioDurationMs` exists — `MediaRecorder`
+  writes WebM with no duration in its header.
+- **Container is negotiated**: `audio/webm;codecs=opus` where it is supported,
+  falling back through `audio/webm`, `audio/ogg;codecs=opus` and `audio/mp4`
+  (Safari records MP4/AAC and supports nothing above it). A browser with no
+  `MediaRecorder` at all says so instead of offering a dead button.
+- **Limits**: the recorder stops itself at 60 seconds, the server refuses
+  anything over 120 seconds or with a non-positive duration, and a card holds
+  at most 20 takes. A take rejected by those checks has its uploaded bytes
+  deleted — unless a saved retry already points at them, so a bad call cannot
+  delete a recording that is in use.
+- **A level meter runs while recording**, so a muted or wrong microphone is
+  visible before the take is saved rather than after.
+
+**Only pronunciation and filler notes get a recorder.** A retry is an audio
+comparison of one phrase said twice, so it only says something about a
+correction to *how* something was said. Grammar, word choice, interview
+structure and technical content are corrections to *what* was said: the fix is
+conceptual, reading the note is the work, and a microphone beside it is clutter
+that adds nothing. Filler sits with pronunciation rather than with the other
+four because "say that again without the ehm" is a fluency drill whose result
+you can actually hear.
+
+The rule is written twice and enforced in both places, the way consent and note
+validation already are in this codebase — `supportsRetry` in
+`apps/web/src/lib/annotation-types.ts` hides the recorder, and
+`requireRetryableCard` in `packages/convex/convex/retryRecordings.ts` refuses
+the write. The backend checks it in `generateUploadUrl`, so a refused type never
+costs an upload, and again in `attach`, because an upload URL outlives the call
+that minted it. (The six type values were already duplicated between the web
+app and the Convex schema; this follows that seam rather than opening a new
+one.)
+
+`annotations.update` can change a note's type after the fact, so a card can end
+up holding takes its current type would not allow. Those takes stay listed and
+playable — deleting audio someone recorded because a label changed would be
+worse than the inconsistency — but the card offers no way to add another.
+
+### Serving retry audio: the same authenticated route, not a second pattern
+
+Retry audio is served exactly like lesson audio:
+
+```
+GET https://<deployment>.convex.site/retryAudio?retryId=<id>
+Authorization: Bearer <Convex Auth token>
+```
+
+The handler resolves the retry, then its card, then that card's lesson, and
+checks the caller against the lesson's tutor and student — the same membership
+rule, re-run on every request. A short personal pronunciation clip is not less
+sensitive than the lesson it came from, so it does not get a weaker mechanism.
+Nothing in this phase calls `ctx.storage.getUrl` either.
+
+Three things were factored rather than copied a third time:
+
+- `isSessionMember` in `packages/convex/convex/model/sessions.ts` is now the
+  single membership rule; `requireOwnSession` uses it.
+- `authorizeStoredFile` in the same file runs "resolve the caller → find the
+  session that owns the bytes → check membership → read the file's content
+  type", and takes a per-route `locate` callback for the one step that differs.
+  Both `lessonSessions.audioRequestTarget` and
+  `retryRecordings.audioRequestTarget` are now four lines each.
+- `routeStoredAudio` in `packages/convex/convex/http.ts` registers the GET and
+  the CORS preflight, so `/lessonAudio` and `/retryAudio` are literally the same
+  code with a different id parameter.
+- `requireOwnReviewCard` is the card-scoped equivalent of `requireOwnSession`:
+  one extra hop, not a second rule.
+
+### The trend view: what each number means
+
+All read-only aggregation over transcript lines and annotations that already
+exist. No new writes, no new capture.
+
+**Words per minute** is every transcribed word over the time from the start of
+the lesson to the end of the last caption — the last line's `endMs`, not
+`endedAt - startedAt`. Line timestamps and the session clock share an origin,
+so the last caption's end is "the time from lesson start until the last thing
+anyone said". Wall-clock end includes whatever came after that — goodbyes with
+the tab still open, a late Stop — which is dead air that drags the rate down
+without anyone having spoken more slowly. Wall clock is the fallback only when
+a lesson has no captions at all, and a lesson with no captions has no words to
+rate, so in practice it never runs. Lessons with no transcript show `—` rather
+than an invented number.
+
+**Filler rate** is filler annotations per 100 transcribed words, not per
+minute. It is a habit of speech: it should not look better simply because the
+lesson was slow.
+
+**Recurring flagged words and sounds** groups annotations by the text they are
+about. A note anchored to a character range names its own words — that range
+against the line's immutable text is exactly what the tutor underlined. A
+line-level note has no range, so the note text is the fallback, and because
+tutors quote the thing they mean ("The 'th' in 'month' and the '-ed' cluster in
+'asked'"), quoted spans are pulled out of it: that one note contributes `th`,
+`month` and `asked` rather than one unmatchable sentence. The quote has to sit
+on a word boundary, so the apostrophes in "don't" and "isn't" cannot pair up
+into a bogus term. A note with nothing quoted contributes its own text, which
+groups repeats of the same note and nothing else. The list shows only terms
+flagged more than once — a list of things that happened once is not a trend.
+
+The whole query reads every line of every lesson. That is fine for a pair with
+a lesson a week and will want a rollup long before it is not; the spec already
+names scheduled functions as where that would live.
+
+### Seeding the study loop to click through
+
+There is still no display on the build machine, so the deployment carries
+enough data to judge this phase by ear and by eye:
+
+- The Phase 2 lesson (24 lines, 9 notes, one distinct tone per line) is still
+  there, and its notes now have cards.
+- **Two more lessons** were seeded through the ordinary capture mutations
+  (`startSession`, `transcriptLines.append`, `finishCapture`,
+  `generateAudioUploadUrl`, `attachAudio`) — a 14-line retro and a 10-line mock
+  interview, 15 notes between them, each with one distinct tone per transcript
+  line like Phase 2's. They deliberately re-flag things the first lesson
+  flagged, so the trend view has real repeats to group: `um` ×4 across three
+  lessons, then `much more fast`, `asked` and `month` ×3 each.
+- **Three retry recordings** on two pronunciation cards, so the side-by-side
+  comparison has something in it before you record anything.
+- A few cards were graded, so the queue is not uniformly "new": one card has
+  been passed twice and sits six days out, one was passed and then lapsed.
+
+At the time of writing that leaves 19 cards due, 5 scheduled ahead, and 8 of
+the 19 lessons carrying captions.
+
+Both extra lessons are stamped with the day they were seeded, because
+`startSession` timestamps a lesson when it starts and there is no backdating
+path that goes through the real mutations. The words-per-minute and filler
+charts therefore show several bars sharing a date label. The seeding scripts
+themselves are not in the repo — throwaway, like Phase 2's.
+
 ## Serving lesson audio: an authenticated route, not a storage link
 
 `ctx.storage.getUrl()` is the obvious way to hand a file to a browser, and it
@@ -329,7 +570,7 @@ partway through the lesson, `audioOffsetMs` is large and the earlier lines
 have no audio behind them. Those lines render "no audio" rather than playing
 whatever happens to sit at second zero.
 
-## What this phase could not verify without a browser
+## What Phase 2 could not verify without a browser
 
 Everything below was checked headlessly against the real deployment, with
 authenticated calls and server-rendered components:
@@ -384,6 +625,75 @@ more of that than Phase 1 did. Still unverified:
   handling, focus order, and how the two-pane layout collapses on a phone.
 - **Dark mode**, which nothing here rendered.
 
+## What Phase 3 could not verify without a browser
+
+Everything below was checked headlessly against the real deployment, with
+authenticated calls and real component rendering — 131 assertions in total:
+
+- **The scheduler** (23 assertions): the published constants, the 1 / 6 /
+  `interval × ease` ladder, the ease formula at every grade, the 1.3 floor, and
+  failure restarting the sequence. Then 4,800 states across 400 random grade
+  sequences compared step by step against a verbatim port of the reference
+  `supermemo` implementation — interval, repetition count and ease all agree,
+  and `dueAt` always follows the interval.
+- **The Convex functions** (84 assertions) against the real deployment with
+  real signed tokens: the queue for both the tutor and the student, `null` for
+  an unauthenticated caller, due ordering, hydration of note/line/audio,
+  grading and its effect on the queue, a note creating exactly one card, a
+  deleted note taking its card *and* the card's stored retries with it, the
+  retry upload/attach/delete cycle, the pronunciation/filler gate refused at
+  both `generateUploadUrl` and `attach` (including an upload minted against a
+  retryable card and aimed at a conceptual one), and every validation path.
+- **The `/retryAudio` route**: both lesson members get the bytes back
+  byte-for-byte; no token, an expired one, and one minted for a different
+  issuer each get 401; a signed-in non-participant gets 403; a malformed id, an
+  unknown id and a missing parameter get 404/404/400; the CORS preflight allows
+  `Authorization` from this site's origin; and `/lessonAudio` still behaves
+  exactly as it did before the shared helper was factored out.
+- **The clip maths reused for retries** (9 assertions): a retry passed as the
+  window `[0, durationMs]` with no offset starts at zero, ends at the file's
+  end and is always available, and the Phase 2 lesson-clip behaviour is
+  unchanged.
+- **The components** (15 renders): `ReviewQueue` and `TrendsView` rendered with
+  `react-dom/server` against live query output — the card, the underlined word
+  range, the progress bar, all four grade buttons, the saved-take list, the
+  recorder present on pronunciation and filler cards and absent on the other
+  four, a re-typed card keeping its takes without offering another, the
+  empty-queue state, the recurring-term list with its counts, both charts, and
+  the per-lesson table.
+
+None of that touches a microphone or a speaker. Still unverified, and more of
+it than in Phase 2:
+
+- **`getUserMedia` and `MediaRecorder` in a real tab.** Nothing here has ever
+  opened a microphone. The permission prompt, a denial, a machine with no
+  microphone, the level meter actually moving, the 60-second auto-stop, and
+  what Chrome and Safari really put in the blob are all first-run-only
+  discoveries. The error messages for `NotAllowedError`, `NotFoundError` and
+  `NotReadableError` are written but have never been triggered.
+- **That a retry sounds like the student.** Echo cancellation, noise
+  suppression and auto gain are all on; whether that flatters or ruins a
+  pronunciation comparison is an audible question.
+- **The side-by-side comparison itself** — the point of the feature. Playing the
+  original, then a take, then the original again, and hearing the difference.
+- **Autoplay policy on the retry.** Clicking a take that is not selected
+  downloads it and plays it when it is ready, which is a `play()` call one tick
+  after a user gesture. Chrome should allow it because the tab has already
+  produced sound; if a take silently fails to start after one click, that is the
+  thing to look at.
+- **The seeded retries are WAV tones, not speech and not WebM.** They prove the
+  route, the storage and the player wiring; they prove nothing about the
+  container `MediaRecorder` actually produces. The `Infinity`-duration
+  workaround in `use-clip-player.ts` is still untested against real WebM, now on
+  two surfaces instead of one.
+- **The keyboard shortcuts.** `space` to replay and `1`–`4` to grade are
+  suppressed on inputs, textareas, buttons and the take preview's own controls,
+  but only a person can confirm that pressing space with the preview player
+  focused scrubs the preview instead of replaying the original.
+- **The two-column card on a phone**, the bar charts at narrow widths, the
+  lesson table's horizontal scroll, focus order through the grade buttons, and
+  **dark mode**, which again nothing here rendered.
+
 ## Design tokens: the Phase 0 port still matches
 
 The brief asked whether reloop's `packages/tailwind/style.css` had drifted
@@ -398,11 +708,37 @@ needed was missing.
 
 ## Notes for later phases
 
-- `reviewCards` is defined in `packages/convex/convex/schema.ts` but has no
-  functions yet. That is intentional scope, not an oversight: Phase 3 owns
-  turning annotations into review cards. `transcriptLines` gained
-  `transcriptLines.append` in Phase 1a; `annotations` gained `create`,
-  `update` and `remove` in Phase 2.
+- `reviewCards` is no longer empty: `annotations.create` writes one card per
+  note and `annotations.remove` deletes it. Phase 4 should assume that any new
+  annotation-shaped thing it adds needs to decide whether it belongs in the
+  queue, rather than assuming the queue is opt-in.
+- Rubric feedback (Phase 4) is a judgement about an answer, not a thing to
+  memorise. If it becomes an `annotations` row it will silently acquire a review
+  card. Either give it its own table or give `createForAnnotation` a reason to
+  say no. If it does become a new annotation type, it also needs a decision in
+  `RETRY_TYPES` (both copies) — the default there is "no recorder", which is
+  almost certainly right for a rubric note.
+- `retryRecordings` rows are the only user-generated audio the website itself
+  creates. Anything that deletes a lesson later has to reach them through their
+  cards: `model/reviewCards.ts` has `deleteRetriesForCard` for exactly that, and
+  there is still no lesson-deletion path anywhere in the product.
+- Phase 5's pronunciation scoring has an obvious input waiting for it: a retry
+  recording plus the exact expected text (the annotation's char range against
+  the line, or the whole line). That pairing is why `retryRecordings` stores
+  `annotationId` alongside `reviewCardId` — the expected text is reachable
+  without going through the card.
+- Function history, so a later phase does not have to read the log:
+  `transcriptLines.append` landed in Phase 1a; `annotations.create`, `update`
+  and `remove` in Phase 2; `reviewCards.queue`/`grade`/`backfill`,
+  `retryRecordings.*` and `trends.forCurrentPair` in Phase 3.
+- `trends.forCurrentPair` reads every transcript line of every lesson on every
+  call. It is honest and cheap at a lesson a week; it is the first query that
+  will want a scheduled rollup, and the spec already names scheduled functions
+  as where that goes.
+- The grade mutation takes the full SM-2 range 0-5 even though the UI only ever
+  sends 2-5. That is deliberate: the algorithm's input domain is the algorithm's,
+  and a future surface (an auto-graded drill, say) should not have to widen a
+  validator to use it.
 - Phase 2 added two optional fields to `annotations`: `charStart` and
   `charEnd`, a character range within the line's raw text, for a note about
   one word rather than the whole utterance. They are optional, so the
@@ -413,15 +749,17 @@ needed was missing.
   and `transcriptLines.ts` now lives once in
   `packages/convex/convex/model/sessions.ts`, since the annotation functions
   would have been a third copy.
-- Nothing calls `ctx.storage.getUrl` any more. Lesson audio is served by the
-  authenticated `/lessonAudio` HTTP action in `packages/convex/convex/http.ts`
-  (see "Serving lesson audio" above), which re-checks the caller against the
-  session on every request. If a future feature needs to hand a file to a
-  browser, that route is the pattern to copy, not `getUrl`.
-- `SITE_URL` is now load-bearing twice over: Convex Auth validates sign-in
-  redirects against it, and `/lessonAudio` uses it as the CORS origin. A
+- Nothing calls `ctx.storage.getUrl` any more. Lesson audio and retry
+  recordings are served by the authenticated `/lessonAudio` and `/retryAudio`
+  HTTP actions in `packages/convex/convex/http.ts` (see "Serving lesson audio"
+  and "Serving retry audio" above), which re-check the caller against the
+  lesson on every request. Both are registered by the same `routeStoredAudio`
+  helper: a third private file should be a fourth call to it, not a third
+  handler.
+- `SITE_URL` is load-bearing twice over: Convex Auth validates sign-in
+  redirects against it, and both audio routes use it as the CORS origin. A
   deployment whose `SITE_URL` does not match the site's real origin will sign
-  users in but fail to play audio.
+  users in but fail to play any audio, lesson or retry.
 - Timestamps: `transcriptLines.startMs`/`endMs` and the recording share one
   origin, the instant the service worker starts the lesson. The recording
   itself begins a little later, and `lessonSessions.audioOffsetMs` is that

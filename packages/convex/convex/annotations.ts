@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, type MutationCtx } from "./_generated/server";
+import { createForAnnotation, deleteForAnnotation } from "./model/reviewCards";
 import { requireOwnSession } from "./model/sessions";
 
 const MAX_NOTE_LENGTH = 2000;
@@ -86,15 +87,22 @@ export const create = mutation({
 			throw new Error("That transcript line belongs to a different lesson");
 		}
 
-		return ctx.db.insert("annotations", {
+		const now = Date.now();
+		const annotationId = await ctx.db.insert("annotations", {
 			sessionId: session._id,
 			transcriptLineId: line._id,
 			type: args.type,
 			note: normalizeNote(args.note),
 			...normalizeRange(line, args.charStart, args.charEnd),
 			authorId: userId,
-			createdAt: Date.now(),
+			createdAt: now,
 		});
+
+		// One flagged thing is one queue entry, written here rather than by a
+		// follow-up call the caller could skip or repeat.
+		await createForAnnotation(ctx, { annotationId, session, now });
+
+		return annotationId;
 	},
 });
 
@@ -130,6 +138,8 @@ export const remove = mutation({
 	},
 	handler: async (ctx, args) => {
 		const annotation = await requireOwnAnnotation(ctx, args.annotationId);
+		// The card is derived from the note, so it goes when the note goes.
+		await deleteForAnnotation(ctx, annotation._id);
 		await ctx.db.delete(annotation._id);
 	},
 });

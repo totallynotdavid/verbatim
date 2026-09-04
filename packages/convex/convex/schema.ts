@@ -88,10 +88,37 @@ export default defineSchema({
 	reviewCards: defineTable({
 		sessionId: v.id("lessonSessions"),
 		sourceAnnotationId: v.id("annotations"),
+		// Whose cards these are. Both members of a pair read the queue.
+		studentId: v.id("users"),
 		dueAt: v.number(),
+		// SM-2 state. `interval` is in days; 0 marks a card never reviewed.
 		interval: v.number(),
 		ease: v.number(),
+		repetitions: v.number(),
+		lapses: v.number(),
+		lastReviewedAt: v.optional(v.number()),
+		lastGrade: v.optional(v.number()),
 	})
 		.index("sessionId", ["sessionId"])
-		.index("dueAt", ["dueAt"]),
+		.index("sourceAnnotationId", ["sourceAnnotationId"])
+		// The queue reads one learner's cards in due order.
+		.index("studentId_dueAt", ["studentId", "dueAt"]),
+
+	/**
+	 * A student saying a flagged word or sentence again, recorded in the
+	 * browser. Stored per attempt rather than spliced into the lesson audio, so
+	 * the original recording stays the immutable record of the lesson.
+	 */
+	retryRecordings: defineTable({
+		reviewCardId: v.id("reviewCards"),
+		// The note this take is an attempt at, so its expected text is
+		// reachable without going through the card.
+		annotationId: v.id("annotations"),
+		storageId: v.id("_storage"),
+		recordedBy: v.id("users"),
+		durationMs: v.number(),
+		createdAt: v.number(),
+	})
+		.index("reviewCardId", ["reviewCardId"])
+		.index("annotationId", ["annotationId"]),
 });
