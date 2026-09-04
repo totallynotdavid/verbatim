@@ -5,19 +5,33 @@ import { cn } from "@verbatim/ui/cn";
 import * as Conversation from "@verbatim/ui/conversation";
 import * as Popover from "@verbatim/ui/popover";
 import { useMutation } from "convex/react";
-import { Play, StickyNote, Volume2, VolumeX } from "lucide-react";
+import { Play, Sparkles, StickyNote, Volume2, VolumeX } from "lucide-react";
 import { useRef, useState } from "react";
 import { ANNOTATION_UNDERLINE } from "@/lib/annotation-types";
 import { formatClock } from "@/lib/clip";
 import { segmentText, selectionOffsetsWithin, trimRange } from "@/lib/text-range";
 import { AnnotationCard } from "./annotation-card";
 import { AnnotationForm } from "./annotation-form";
-import type { ReviewAnnotation, ReviewData, ReviewLine } from "./types";
+import type {
+	ReviewAnnotation,
+	ReviewData,
+	ReviewLine,
+	ReviewSuggestion,
+} from "./types";
+
+/**
+ * A transcript span is either a tutor note or an unreviewed model draft.
+ * Drafts use a dashed underline.
+ */
+type TranscriptMark =
+	| { start: number; end: number; kind: "note"; annotation: ReviewAnnotation }
+	| { start: number; end: number; kind: "draft" };
 
 export function TranscriptLine({
 	sessionId,
 	line,
 	annotations,
+	suggestions,
 	mine,
 	startsGroup,
 	speakerName,
@@ -30,6 +44,8 @@ export function TranscriptLine({
 	sessionId: ReviewData["session"]["_id"];
 	line: ReviewLine;
 	annotations: ReviewAnnotation[];
+	/** Pending drafts on this line. Students receive none. */
+	suggestions: ReviewSuggestion[];
 	mine: boolean;
 	startsGroup: boolean;
 	speakerName: string;
@@ -47,11 +63,26 @@ export function TranscriptLine({
 	const [pending, setPending] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
-	const ranges = annotations.flatMap((annotation) =>
-		annotation.charStart !== null && annotation.charEnd !== null
-			? [{ start: annotation.charStart, end: annotation.charEnd, annotation }]
-			: [],
-	);
+	// Notes first, so a span that is both a note and a draft reads as a note.
+	const ranges: TranscriptMark[] = [
+		...annotations.flatMap((annotation): TranscriptMark[] =>
+			annotation.charStart !== null && annotation.charEnd !== null
+				? [
+						{
+							start: annotation.charStart,
+							end: annotation.charEnd,
+							kind: "note",
+							annotation,
+						},
+					]
+				: [],
+		),
+		...suggestions.flatMap((suggestion): TranscriptMark[] =>
+			suggestion.charStart !== null && suggestion.charEnd !== null
+				? [{ start: suggestion.charStart, end: suggestion.charEnd, kind: "draft" }]
+				: [],
+		),
+	];
 	const segments = segmentText(line.text, ranges);
 
 	function openComposer(next: { start: number; end: number } | null) {
@@ -101,20 +132,23 @@ export function TranscriptLine({
 							className="cursor-pointer whitespace-pre-wrap break-words"
 						>
 							{segments.map((segment) => {
-								// Overlaps use the first note's underline color.
+								// Overlaps use the first mark's underline.
 								const covering = segment.covering[0];
-								return covering ? (
+								if (covering === undefined) {
+									return <span key={segment.start}>{segment.text}</span>;
+								}
+								return (
 									<span
 										key={segment.start}
 										className={cn(
 											"underline decoration-2 underline-offset-4",
-											ANNOTATION_UNDERLINE[covering.annotation.type],
+											covering.kind === "note"
+												? ANNOTATION_UNDERLINE[covering.annotation.type]
+												: "decoration-dashed decoration-stroke-sub-300",
 										)}
 									>
 										{segment.text}
 									</span>
-								) : (
-									<span key={segment.start}>{segment.text}</span>
 								);
 							})}
 						</p>
@@ -164,6 +198,16 @@ export function TranscriptLine({
 								<StickyNote className="size-3" />
 								note
 							</button>
+
+							{suggestions.length > 0 ? (
+								<span
+									className="inline-flex items-center gap-1 rounded px-1.5 py-0.5"
+									title={`${suggestions.length} automated suggestion${suggestions.length === 1 ? "" : "s"} waiting on the Suggestions tab`}
+								>
+									<Sparkles className="size-3" />
+									{suggestions.length} suggested
+								</span>
+							) : null}
 						</div>
 					</Conversation.Bubble>
 				</Popover.Anchor>

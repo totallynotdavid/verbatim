@@ -29,13 +29,7 @@ const gradeValidator = v.union(
 const UPCOMING_WINDOW_DAYS = 7;
 const DAY_MS = 86_400_000;
 
-/**
- * Resolves the learner whose queue the caller sees.
- *
- * A student sees their own cards; a tutor sees the cards of the student they
- * are paired with. Single pairing is the product's data model, so there is
- * exactly one answer.
- */
+/** Resolves the learner whose queue the caller sees. */
 async function queueOwner(ctx: QueryCtx): Promise<Id<"users"> | null> {
 	const userId = await getAuthUserId(ctx);
 	if (userId === null) return null;
@@ -45,41 +39,53 @@ async function queueOwner(ctx: QueryCtx): Promise<Id<"users"> | null> {
 	return user.pairedWithUserId ?? null;
 }
 
+/** Returns a take's read-only worker score, if one exists. */
+async function scoreForRetry(
+	ctx: QueryCtx,
+	retryRecordingId: Id<"retryRecordings">,
+) {
+	const score = await ctx.db
+		.query("pronunciationScores")
+		.withIndex("retryRecordingId", (q) =>
+			q.eq("retryRecordingId", retryRecordingId),
+		)
+		.unique();
+	if (score === null) return null;
+	return {
+		status: score.status,
+		expectedText: score.expectedText,
+		score: score.score ?? null,
+		transcript: score.transcript ?? null,
+		words: score.words ?? [],
+		error: score.error ?? null,
+	};
+}
+
 async function retriesForCard(
 	ctx: QueryCtx,
 	reviewCardId: Id<"reviewCards">,
-): Promise<
-	{
-		_id: Id<"retryRecordings">;
-		url: string;
-		durationMs: number;
-		createdAt: number;
-		recordedBy: Id<"users">;
-	}[]
-> {
+) {
 	const retries = await ctx.db
 		.query("retryRecordings")
 		.withIndex("reviewCardId", (q) => q.eq("reviewCardId", reviewCardId))
 		.collect();
 
-	return retries
-		.sort((a, b) => a.createdAt - b.createdAt)
-		.map((retry) => ({
-			_id: retry._id,
-			// Reauthorized on every request. A storage URL cannot be revoked.
-			url: `${process.env.CONVEX_SITE_URL}${RETRY_AUDIO_PATH}?retryId=${retry._id}`,
-			durationMs: retry.durationMs,
-			createdAt: retry.createdAt,
-			recordedBy: retry.recordedBy,
-		}));
+	return Promise.all(
+		retries
+			.sort((a, b) => a.createdAt - b.createdAt)
+			.map(async (retry) => ({
+				_id: retry._id,
+				// Reauthorized on every request. A storage URL cannot be revoked.
+				url: `${process.env.CONVEX_SITE_URL}${RETRY_AUDIO_PATH}?retryId=${retry._id}`,
+				durationMs: retry.durationMs,
+				createdAt: retry.createdAt,
+				recordedBy: retry.recordedBy,
+				pronunciation: await scoreForRetry(ctx, retry._id),
+			})),
+	);
 }
 
-/**
- * Per-query cache for the handful of sessions and people a queue spans.
- *
- * A queue is many cards over a few lessons between two people, so without this
- * the same session and the same two users are re-read once per card.
- */
+/** Caches repeated session and user reads within one queue query. */
 type Lookups = {
 	sessions: Map<string, Doc<"lessonSessions"> | null>;
 	users: Map<string, Doc<"users"> | null>;
@@ -97,7 +103,6 @@ async function cached<T>(
 	return value;
 }
 
-/** Everything the review surface needs to show and play one card. */
 async function hydrate(
 	ctx: QueryCtx,
 	card: Doc<"reviewCards">,
@@ -145,6 +150,8 @@ async function hydrate(
 			charStart: annotation.charStart ?? null,
 			charEnd: annotation.charEnd ?? null,
 			authorName: author?.name ?? null,
+			// Legacy notes have no source, so treat them as tutor-written.
+			source: annotation.source ?? "tutor",
 			createdAt: annotation.createdAt,
 		},
 		line: {
@@ -172,13 +179,7 @@ async function hydrate(
 	};
 }
 
-/**
- * Today's queue: every card whose due date has arrived, oldest first, across
- * all of the pair's lessons.
- *
- * Returns null while auth is still resolving, so a caller can tell "not signed
- * in yet" from "nothing due".
- */
+/** Returns the pair's due cards, or null while authentication is unresolved. */
 export const queue = query({
 	args: {},
 	handler: async (ctx) => {
@@ -227,13 +228,7 @@ export const queue = query({
 	},
 });
 
-/**
- * Records one SM-2 review and reschedules the card.
- *
- * "Reviewing" is whatever the surface asks of the student (hearing the clip, or
- * recording a retry and comparing it), ending with them grading how it went.
- * The grade is the algorithm's only input.
- */
+/** Records an SM-2 grade and reschedules the card. The grade is its only input. */
 export const grade = mutation({
 	args: {
 		reviewCardId: v.id("reviewCards"),
@@ -253,13 +248,7 @@ export const grade = mutation({
 	},
 });
 
-/**
- * Gives a card to any note that has none.
- *
- * `annotations.create` writes one with the note, so this is only for notes a
- * deployment already held. Safe to run repeatedly: it skips annotations that
- * already have a card.
- */
+/** Creates missing cards for existing annotations; safe to run repeatedly. */
 export const backfill = internalMutation({
 	args: {},
 	handler: async (ctx) => {

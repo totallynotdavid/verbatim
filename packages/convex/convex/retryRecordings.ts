@@ -1,10 +1,12 @@
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
 	internalQuery,
 	mutation,
 	type MutationCtx,
 } from "./_generated/server";
+import { deleteScoreForRetry } from "./model/scoring";
 import {
 	authorizeStoredFile,
 	requireOwnReviewCard,
@@ -17,16 +19,7 @@ import {
  */
 const MAX_RETRY_MS = 120_000;
 
-/**
- * The note types a retry is meaningful for, enforced on every write.
- *
- * A retry is an audio comparison of one phrase said twice, so it only says
- * something about a correction to *how* something was said. Grammar, word
- * choice, interview structure and technical content are corrections to *what*
- * was said, where the fix is conceptual and reading the note is the work.
- * Filler sits with pronunciation because "say it again without the ehm" is a
- * drill whose result you can hear.
- */
+/** Retry audio applies to corrections of pronunciation or filler words. */
 const RETRY_TYPES: ReadonlySet<Doc<"annotations">["type"]> = new Set([
 	"pronunciation",
 	"filler",
@@ -64,13 +57,7 @@ export const generateUploadUrl = mutation({
 	},
 });
 
-/**
- * Attaches an uploaded retry to its card.
- *
- * `durationMs` is measured while recording rather than read back from the
- * file: `MediaRecorder` writes WebM without a duration in its header, the same
- * reason `lessonSessions.audioDurationMs` exists.
- */
+/** Attaches an uploaded retry; duration is measured during recording. */
 export const attach = mutation({
 	args: {
 		reviewCardId: v.id("reviewCards"),
@@ -85,11 +72,7 @@ export const attach = mutation({
 			.withIndex("reviewCardId", (q) => q.eq("reviewCardId", card._id))
 			.collect();
 
-		/**
-		 * A rejected upload leaves bytes nothing points at, so drop them. The
-		 * exception is bytes a saved retry already claims: a bad second call must
-		 * not delete a recording that is in use.
-		 */
+		/** Delete unclaimed upload bytes when validation rejects them. */
 		const claimed = existing.some((retry) => retry.storageId === args.storageId);
 		const reject = async (message: string): Promise<never> => {
 			if (!claimed) await ctx.storage.delete(args.storageId);
@@ -117,7 +100,7 @@ export const attach = mutation({
 			);
 		}
 
-		return ctx.db.insert("retryRecordings", {
+		const retryRecordingId = await ctx.db.insert("retryRecordings", {
 			reviewCardId: card._id,
 			annotationId: card.sourceAnnotationId,
 			storageId: args.storageId,
@@ -125,6 +108,12 @@ export const attach = mutation({
 			durationMs: Math.round(args.durationMs),
 			createdAt: Date.now(),
 		});
+
+		// Score each saved take when the worker is configured.
+		await ctx.scheduler.runAfter(0, internal.retryScoring.score, {
+			retryRecordingId,
+		});
+		return retryRecordingId;
 	},
 });
 
@@ -143,6 +132,7 @@ export const remove = mutation({
 			throw new Error("That retry was recorded by someone else");
 		}
 
+		await deleteScoreForRetry(ctx, retry._id);
 		await ctx.storage.delete(retry.storageId);
 		await ctx.db.delete(retry._id);
 	},

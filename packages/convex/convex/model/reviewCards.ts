@@ -1,13 +1,9 @@
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { newCardState } from "./scheduling";
+import { deleteScoreForRetry } from "./scoring";
 
-/**
- * Review cards are derived state: one card per annotation, written by the same
- * mutation that writes the annotation. A tutor flagging one thing produces one
- * queue entry, and deleting the note takes the card (and any retries recorded
- * against it) with it.
- */
+/** Review cards and retries are derived from annotations and deleted with them. */
 
 export async function createForAnnotation(
 	ctx: MutationCtx,
@@ -52,6 +48,8 @@ export async function deleteRetriesForCard(
 		.collect();
 
 	for (const retry of retries) {
+		// Delete the take's derived score before deleting the take.
+		await deleteScoreForRetry(ctx, retry._id);
 		await ctx.storage.delete(retry.storageId);
 		await ctx.db.delete(retry._id);
 	}

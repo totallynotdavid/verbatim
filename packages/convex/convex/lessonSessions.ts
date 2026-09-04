@@ -116,21 +116,44 @@ export const getReview = query({
 				.collect(),
 		]);
 
-		// Return transcript lines in order regardless of query ordering.
+		// The review surface expects chronological transcript lines.
 		lines.sort((a, b) => a.order - b.order);
-		// Non-overlapping segments can be ordered by their start.
+		// Interview segments render in transcript order.
 		segments.sort((a, b) => a.startOrder - b.startOrder);
 
 		const rubricBySegment = new Map(
 			rubrics.map((rubric) => [rubric.segmentId, rubric]),
 		);
-		// Avoid refetching questions reused by multiple segments.
+		// Avoid duplicate question reads.
 		const questionIds = [...new Set(segments.map((s) => s.questionId))];
 		const questionById = new Map(
 			(await Promise.all(questionIds.map((id) => ctx.db.get(id))))
 				.filter((question) => question !== null)
 				.map((question) => [question._id, question]),
 		);
+
+		// Students receive neither analysis runs nor unconfirmed suggestions.
+		const isTutor = session.tutorId === viewerId;
+		const [runs, suggestions] = isTutor
+			? await Promise.all([
+					ctx.db
+						.query("pronunciationRuns")
+						.withIndex("sessionId", (q) => q.eq("sessionId", session._id))
+						.collect(),
+					ctx.db
+						.query("pronunciationSuggestions")
+						.withIndex("sessionId", (q) => q.eq("sessionId", session._id))
+						.collect(),
+				])
+			: [[], []];
+
+		// Show only the most recent run.
+		const latestRun =
+			runs.length === 0
+				? null
+				: runs.reduce((newest, run) =>
+						run.requestedAt > newest.requestedAt ? run : newest,
+					);
 
 		const nameFor = (userId: Doc<"users">["_id"] | undefined) => {
 			if (userId === undefined) return null;
@@ -152,7 +175,7 @@ export const getReview = query({
 			const metadata = await ctx.db.system.get(storageId);
 			audio = {
 				url: `${process.env.CONVEX_SITE_URL}${LESSON_AUDIO_PATH}?sessionId=${session._id}`,
-					// WebM may omit duration, so trust the session metadata.
+					// WebM may omit duration.
 				durationMs: session.audioDurationMs ?? null,
 				offsetMs: session.audioOffsetMs ?? 0,
 				contentType: metadata?.contentType ?? null,
@@ -195,9 +218,41 @@ export const getReview = query({
 					authorId: annotation.authorId,
 					authorName: nameFor(annotation.authorId),
 					isOwn: annotation.authorId === viewerId,
+					// Legacy notes have no source, so treat them as tutor-written.
+					source: annotation.source ?? "tutor",
 					createdAt: annotation.createdAt,
 				}))
 				.sort((a, b) => a.createdAt - b.createdAt),
+			analysis: {
+				run:
+					latestRun === null
+						? null
+						: {
+								_id: latestRun._id,
+								status: latestRun.status,
+								requestedAt: latestRun.requestedAt,
+								completedAt: latestRun.completedAt ?? null,
+								error: latestRun.error ?? null,
+								wordsRead: latestRun.wordsRead ?? null,
+								suggestionsCreated: latestRun.suggestionsCreated ?? null,
+							},
+				// Expose only pending drafts to tutors.
+				suggestions: suggestions
+					.filter((suggestion) => suggestion.status === "pending")
+					.map((suggestion) => ({
+						_id: suggestion._id,
+						transcriptLineId: suggestion.transcriptLineId,
+						worker: suggestion.worker,
+						note: suggestion.note,
+						charStart: suggestion.charStart ?? null,
+						charEnd: suggestion.charEnd ?? null,
+						confidence: suggestion.confidence ?? null,
+						createdAt: suggestion.createdAt,
+					}))
+					.sort((a, b) => (a.confidence ?? 1) - (b.confidence ?? 1)),
+				confirmedCount: suggestions.filter((s) => s.status === "confirmed").length,
+				dismissedCount: suggestions.filter((s) => s.status === "dismissed").length,
+			},
 			interviewSegments: segments.map((segment) => {
 				const question = questionById.get(segment.questionId) ?? null;
 				const rubric = rubricBySegment.get(segment._id) ?? null;

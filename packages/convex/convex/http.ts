@@ -3,6 +3,12 @@ import { internal } from "./_generated/api";
 import { auth } from "./auth";
 import { type ActionCtx, httpAction } from "./_generated/server";
 import {
+	runToken,
+	SCORING_AUDIO_PATH,
+	SCORING_CALLBACK_PATH,
+	timingSafeEqual,
+} from "./model/scoring";
+import {
 	LESSON_AUDIO_PATH,
 	RETRY_AUDIO_PATH,
 	type StoredFileTarget,
@@ -30,15 +36,7 @@ function corsHeaders(): Record<string, string> {
 	};
 }
 
-/**
- * Registers an authenticated audio route.
- *
- * Lesson recordings and retry recordings are both private audio behind the same
- * lesson membership check, so they get the same route: no storage URL, the
- * caller reauthorized on every request, and the bytes streamed from an HTTP
- * action. They differ only in which id the URL carries and which internal query
- * resolves it. Convex limits HTTP action responses to 20MB.
- */
+/** Registers a private audio route with per-request authorization. */
 function routeStoredAudio({
 	path,
 	param,
@@ -135,6 +133,131 @@ routeStoredAudio({
 	param: "retryId",
 	fetchTarget: (ctx, retryId) =>
 		ctx.runQuery(internal.retryRecordings.audioRequestTarget, { retryId }),
+});
+
+/* Worker routes use per-run URL tokens because Replicate cannot send Convex Auth
+ * headers. They must not use member-session authorization. */
+
+type RunAuth =
+	| { ok: true; runId: string }
+	| { ok: false; response: Response };
+
+/**
+ * Authorizes a worker request before reading its body or loading a run.
+ *
+ * Missing configuration returns 503; invalid credentials return 401.
+ */
+async function authorizeRun(
+	request: Request,
+	purpose: "audio" | "callback",
+): Promise<RunAuth> {
+	const secret = process.env.SCORING_CALLBACK_SECRET;
+	if (secret === undefined || secret === "") {
+		return {
+			ok: false,
+			response: new Response("scoring-not-configured", { status: 503 }),
+		};
+	}
+
+	const params = new URL(request.url).searchParams;
+	const runId = params.get("run") ?? "";
+	const token = params.get("token") ?? "";
+	if (runId === "" || token === "") {
+		return { ok: false, response: new Response("unauthorized", { status: 401 }) };
+	}
+
+	const expected = await runToken(purpose, runId, secret);
+	if (!timingSafeEqual(token, expected)) {
+		return { ok: false, response: new Response("unauthorized", { status: 401 }) };
+	}
+	return { ok: true, runId };
+}
+
+/** Serves lesson audio through a revocable, run-scoped URL. */
+http.route({
+	path: SCORING_AUDIO_PATH,
+	method: "GET",
+	handler: httpAction(async (ctx, request) => {
+		const auth = await authorizeRun(request, "audio");
+		if (!auth.ok) return auth.response;
+
+		const target = await ctx.runQuery(internal.scoring.runAudioTarget, {
+			runId: auth.runId,
+		});
+		if (target === null) {
+			return new Response("not-found", { status: 404 });
+		}
+		const blob = await ctx.storage.get(target.storageId);
+		if (blob === null) {
+			return new Response("not-found", { status: 404 });
+		}
+
+		return new Response(blob, {
+			headers: {
+				"Content-Type": target.contentType ?? "application/octet-stream",
+				// Lesson audio must not be cached.
+				"Cache-Control": "private, no-store",
+			},
+		});
+	}),
+});
+
+/** Accepts the final transcription; repeated deliveries are acknowledged. */
+http.route({
+	path: SCORING_CALLBACK_PATH,
+	method: "POST",
+	handler: httpAction(async (ctx, request) => {
+		const auth = await authorizeRun(request, "callback");
+		if (!auth.ok) return auth.response;
+
+		const run = await ctx.runQuery(internal.scoring.runForWorker, {
+			runId: auth.runId,
+		});
+		if (run === null) {
+			return new Response("not-found", { status: 404 });
+		}
+
+		let prediction: { status?: unknown; output?: unknown; error?: unknown };
+		try {
+			prediction = (await request.json()) as typeof prediction;
+		} catch {
+			return new Response("bad-request", { status: 400 });
+		}
+
+		const failed = (error: string) =>
+			ctx.runMutation(internal.scoring.patchRun, {
+				runId: run._id,
+				status: "failed" as const,
+				error,
+			});
+
+		if (prediction.status !== "succeeded") {
+			const detail =
+				typeof prediction.error === "string" && prediction.error !== ""
+					? prediction.error
+					: "no error was reported";
+			await failed(
+				`The transcription ended as "${String(prediction.status ?? "unknown")}": ${detail}`,
+			);
+			return new Response("ok", { status: 200 });
+		}
+
+		const output = prediction.output;
+		if (output === null || typeof output !== "object") {
+			await failed("The transcription finished but returned nothing");
+			return new Response("ok", { status: 200 });
+		}
+
+		// Large word-level output can exceed the document limit, so store it as a file.
+		const storageId = await ctx.storage.store(
+			new Blob([JSON.stringify(output)], { type: "application/json" }),
+		);
+		await ctx.runMutation(internal.scoring.acceptResult, {
+			runId: run._id,
+			storageId,
+		});
+		return new Response("ok", { status: 200 });
+	}),
 });
 
 export default http;
