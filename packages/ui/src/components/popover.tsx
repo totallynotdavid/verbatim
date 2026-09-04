@@ -1,0 +1,72 @@
+"use client";
+
+import * as PopoverPrimitive from "@radix-ui/react-popover";
+import { Slottable } from "@radix-ui/react-slot";
+import * as React from "react";
+import { cn } from "../utils/cn";
+
+const PopoverRoot = PopoverPrimitive.Root;
+const PopoverTrigger = PopoverPrimitive.Trigger;
+const PopoverAnchor = PopoverPrimitive.Anchor;
+
+const PopoverContent = React.forwardRef<
+	React.ComponentRef<typeof PopoverPrimitive.Content>,
+	React.ComponentPropsWithoutRef<typeof PopoverPrimitive.Content> & {
+		showArrow?: boolean;
+		unstyled?: boolean;
+	}
+>(
+	(
+		{
+			children,
+			className,
+			align = "center",
+			sideOffset = 12,
+			collisionPadding = 12,
+			arrowPadding = 12,
+			showArrow = true,
+			unstyled,
+			...rest
+		},
+		forwardedRef,
+	) => (
+		<PopoverPrimitive.Portal>
+			<PopoverPrimitive.Content
+				ref={forwardedRef}
+				align={align}
+				sideOffset={sideOffset}
+				collisionPadding={collisionPadding}
+				arrowPadding={arrowPadding}
+				className={cn(
+					!unstyled &&
+						"w-max rounded-2xl bg-bg-white-0 p-5 shadow-regular-md ring-1 ring-stroke-soft-100 ring-inset dark:ring-stroke-soft-100/40",
+					"z-50",
+					"data-[state=closed]:animate-out data-[state=open]:animate-in",
+					"data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
+					"data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2",
+					className,
+				)}
+				{...rest}
+			>
+				<Slottable>{children}</Slottable>
+
+				{showArrow && (
+					<PopoverPrimitive.Arrow asChild>
+						<div className="-translate-y-[calc(50%+1px)] -rotate-45 size-[11px] rounded-bl-[3px] border border-stroke-soft-100 bg-bg-white-0 [clip-path:polygon(0_100%,0_0,100%_100%)] dark:border-stroke-soft-100/40" />
+					</PopoverPrimitive.Arrow>
+				)}
+			</PopoverPrimitive.Content>
+		</PopoverPrimitive.Portal>
+	),
+);
+PopoverContent.displayName = "PopoverContent";
+
+const PopoverClose = PopoverPrimitive.Close;
+
+export {
+	PopoverRoot as Root,
+	PopoverAnchor as Anchor,
+	PopoverTrigger as Trigger,
+	PopoverContent as Content,
+	PopoverClose as Close,
+};
