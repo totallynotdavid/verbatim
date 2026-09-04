@@ -9,6 +9,7 @@ import {
 	LayoutDashboard,
 	LineChart,
 	LogOut,
+	MessageCircleQuestion,
 	Puzzle,
 	Repeat2,
 	Settings,
@@ -20,6 +21,12 @@ const NAV_ITEMS: SidebarNavItem[] = [
 	{ id: "dashboard", label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
 	{ id: "review", label: "Review", href: "/dashboard/review", icon: Repeat2 },
 	{ id: "trends", label: "Trends", href: "/dashboard/trends", icon: LineChart },
+	{
+		id: "questions",
+		label: "Questions",
+		href: "/dashboard/questions",
+		icon: MessageCircleQuestion,
+	},
 	{ id: "settings", label: "Settings", href: "/dashboard/settings", icon: Settings },
 	{
 		id: "extension",

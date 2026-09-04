@@ -6,3 +6,4 @@ export type ReviewData = NonNullable<
 >;
 export type ReviewLine = ReviewData["lines"][number];
 export type ReviewAnnotation = ReviewData["annotations"][number];
+export type ReviewSegment = ReviewData["interviewSegments"][number];
