@@ -13,7 +13,7 @@ function generateInviteCode(): string {
 	return code;
 }
 
-/** Returns the signed-in user's profile, partner info, and open invite. */
+/** Returns the signed-in user's profile and pairing state. */
 export const viewer = query({
 	args: {},
 	handler: async (ctx) => {
@@ -49,7 +49,7 @@ export const viewer = query({
 	},
 });
 
-/** Sets the user's role during onboarding. The role cannot be changed later. */
+/** Sets the user's role once during onboarding. */
 export const setRole = mutation({
 	args: {
 		role: v.union(v.literal("tutor"), v.literal("student")),
@@ -63,7 +63,7 @@ export const setRole = mutation({
 	},
 });
 
-/** Returns the code that the user's tutor/student counterpart can redeem. */
+/** Creates an invite for the user's unpaired counterpart. */
 export const createPairingInvite = mutation({
 	args: {},
 	handler: async (ctx) => {
@@ -78,7 +78,7 @@ export const createPairingInvite = mutation({
 			return user.pairingInviteCode;
 		}
 
-		// Retry if the generated code is already in use.
+		// Retry on a collision.
 		for (let attempt = 0; attempt < 5; attempt++) {
 			const code = generateInviteCode();
 			const existing = await ctx.db
@@ -94,10 +94,7 @@ export const createPairingInvite = mutation({
 	},
 });
 
-/**
- * Completes the only pairing allowed for this product. Users must be unpaired
- * and have opposite roles.
- */
+/** Pairs two unpaired users with opposite roles. */
 export const acceptPairingInvite = mutation({
 	args: {
 		code: v.string(),
@@ -140,10 +137,7 @@ export const acceptPairingInvite = mutation({
 	},
 });
 
-/**
- * Sets consent for future recordings without changing existing session
- * snapshots.
- */
+/** Sets consent for future recordings without changing session snapshots. */
 export const setStandingConsent = mutation({
 	args: {
 		consent: v.boolean(),

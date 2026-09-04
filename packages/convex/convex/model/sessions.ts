@@ -2,12 +2,8 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 
-/** Shared authorization helpers for lesson sessions. */
-
-/** Path used by the authenticated lesson-audio route. */
 export const LESSON_AUDIO_PATH = "/lessonAudio";
 
-/** Path used by the authenticated retry-recording route. */
 export const RETRY_AUDIO_PATH = "/retryAudio";
 
 export async function requireCurrentUser(ctx: QueryCtx): Promise<Doc<"users">> {
@@ -22,7 +18,6 @@ export async function requireCurrentUser(ctx: QueryCtx): Promise<Doc<"users">> {
 	return user;
 }
 
-/** The single membership rule every session-scoped resource is checked against. */
 export function isSessionMember(
 	session: Doc<"lessonSessions">,
 	userId: Id<"users">,
@@ -73,17 +68,7 @@ export type StoredFileTarget =
 	| { ok: true; storageId: Id<"_storage">; contentType: string | null }
 	| { ok: false; reason: "unauthenticated" | "forbidden" | "not-found" };
 
-/**
- * Reauthorizes a stored file that a lesson session guards.
- *
- * Every private-audio route needs the same steps: resolve the caller, find the
- * session that owns the bytes, check membership. Only the walk from a URL
- * parameter to a session and a storage id differs, and that walk is `locate`,
- * so the membership rule stays written once.
- *
- * `locate` runs only after authentication. Returning null from it means "not
- * found" without saying whether the row exists.
- */
+/** Reauthorizes access to a session's stored file for each request. */
 export async function authorizeStoredFile(
 	ctx: QueryCtx,
 	locate: () => Promise<{
@@ -101,7 +86,7 @@ export async function authorizeStoredFile(
 		return { ok: false, reason: "not-found" };
 	}
 	if (!isSessionMember(located.session, userId)) {
-		// Return 403 only after authentication, without exposing membership.
+		// Do not reveal membership to unauthenticated callers.
 		return { ok: false, reason: "forbidden" };
 	}
 	if (located.storageId === undefined) {
@@ -127,12 +112,7 @@ export async function loadParticipants(
 	return { tutor, student };
 }
 
-/**
- * Loads a review card together with the lesson that authorizes it.
- *
- * A card is only ever reachable through its session, so this is
- * `requireOwnSession` with one extra hop rather than a second rule.
- */
+/** Loads a review card only after authorizing its lesson. */
 export async function requireOwnReviewCard(
 	ctx: QueryCtx,
 	reviewCardId: Id<"reviewCards">,

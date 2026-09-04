@@ -30,13 +30,11 @@ export function TranscriptLine({
 	sessionId: ReviewData["session"]["_id"];
 	line: ReviewLine;
 	annotations: ReviewAnnotation[];
-	/** Whether this line belongs to the current user. */
 	mine: boolean;
 	startsGroup: boolean;
 	speakerName: string;
 	active: boolean;
 	playing: boolean;
-	/** Whether this line overlaps the recording. */
 	audioAvailable: boolean;
 	inSegment?: boolean;
 	onSelect: (lineId: string) => void;

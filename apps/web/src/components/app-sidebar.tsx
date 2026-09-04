@@ -41,8 +41,7 @@ export function AppSidebar() {
 	const { signOut } = useAuthActions();
 	const pathname = usePathname();
 
-	// Longest-prefix match, not array order: /dashboard/settings must win
-	// over /dashboard even though it comes second in NAV_ITEMS.
+	// Longest matching route wins for nested dashboard pages.
 	const activeId = NAV_ITEMS.filter((item) => pathname.startsWith(item.href)).sort(
 		(a, b) => b.href.length - a.href.length,
 	)[0]?.id;

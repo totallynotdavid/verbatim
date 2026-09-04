@@ -31,12 +31,7 @@ async function requirePairedUser(ctx: QueryCtx): Promise<{
 	return { user, partner };
 }
 
-/**
- * Returns the current pair's sessions, most recent first.
- *
- * Count annotations without loading transcript lines, so list cost follows
- * note count rather than transcript length.
- */
+/** Returns the current pair's sessions, most recent first. */
 export const listForCurrentPair = query({
 	args: {},
 	handler: async (ctx) => {
@@ -88,12 +83,7 @@ export const listForCurrentPair = query({
 	},
 });
 
-/**
- * Returns the review data for one session.
- *
- * Auth that is still resolving returns `null`. An existing unauthorized
- * session raises an authorization error.
- */
+/** Returns review data, or `null` while authentication is unresolved. */
 export const getReview = query({
 	args: {
 		sessionId: v.id("lessonSessions"),
@@ -149,7 +139,7 @@ export const getReview = query({
 			return null;
 		};
 
-		// The route reauthorizes access on each request. Do not expose a storage URL.
+		// Use the authenticated route instead of exposing a storage URL.
 		const storageId = session.audioStorageId;
 		let audio: {
 			url: string;
@@ -162,7 +152,7 @@ export const getReview = query({
 			const metadata = await ctx.db.system.get(storageId);
 			audio = {
 				url: `${process.env.CONVEX_SITE_URL}${LESSON_AUDIO_PATH}?sessionId=${session._id}`,
-				// Session metadata is authoritative because WebM may omit duration.
+					// WebM may omit duration, so trust the session metadata.
 				durationMs: session.audioDurationMs ?? null,
 				offsetMs: session.audioOffsetMs ?? 0,
 				contentType: metadata?.contentType ?? null,
@@ -247,10 +237,7 @@ export const getReview = query({
 	},
 });
 
-/**
- * Authorizes a lesson-audio request and returns a result the HTTP route can map
- * to a status code. String input lets malformed URL ids return 404.
- */
+/** Resolves a string URL id for the authenticated lesson-audio route. */
 export const audioRequestTarget = internalQuery({
 	args: {
 		sessionId: v.string(),
@@ -268,7 +255,7 @@ export const audioRequestTarget = internalQuery({
 		}),
 });
 
-/** Checks both users' current consent before creating a session. */
+/** Requires current consent from both participants. */
 export const startSession = mutation({
 	args: {},
 	handler: async (ctx) => {
@@ -309,7 +296,7 @@ export const finishCapture = mutation({
 	},
 	handler: async (ctx, args) => {
 		const { session } = await requireOwnSession(ctx, args.sessionId);
-		// Repeated stops should be harmless.
+		// Make repeated stops idempotent.
 		if (session.status !== "recording") {
 			return session.status;
 		}
@@ -347,7 +334,6 @@ export const attachAudio = mutation({
 			);
 		}
 
-		// Delete the old upload when replacing it.
 		if (
 			session.audioStorageId !== undefined &&
 			session.audioStorageId !== args.storageId

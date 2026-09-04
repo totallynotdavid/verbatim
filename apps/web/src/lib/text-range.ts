@@ -19,11 +19,9 @@ export function trimRange(text: string, range: TextRange): TextRange | null {
 export type Segment<T> = {
 	text: string;
 	start: number;
-	/** Ranges covering this segment. */
 	covering: T[];
 };
 
-/** Splits text wherever highlight coverage changes. */
 export function segmentText<T extends TextRange>(
 	text: string,
 	ranges: readonly T[],
@@ -63,10 +61,7 @@ export function segmentText<T extends TextRange>(
 	return segments;
 }
 
-/**
- * Converts the current selection to offsets within `container`.
- * Returns null for an empty or cross-container selection.
- */
+/** Returns offsets for a non-empty selection wholly inside `container`. */
 export function selectionOffsetsWithin(
 	container: HTMLElement,
 ): TextRange | null {

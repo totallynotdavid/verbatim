@@ -44,9 +44,9 @@ export default defineSchema({
 		googleSub: v.optional(v.string()),
 		role: v.optional(v.union(v.literal("tutor"), v.literal("student"))),
 		pairedWithUserId: v.optional(v.id("users")),
-		// User consent captured when a session starts.
+		// Current consent setting for future sessions.
 		standingConsent: v.optional(v.boolean()),
-		// Present while an invite can be redeemed.
+		// Cleared when the invite is redeemed.
 		pairingInviteCode: v.optional(v.string()),
 	})
 		.index("email", ["email"])
@@ -66,10 +66,9 @@ export default defineSchema({
 		),
 		audioStorageId: v.optional(v.id("_storage")),
 		audioDurationMs: v.optional(v.number()),
-		// Delay from session start to the first audio sample. Seek with
-		// startMs - audioOffsetMs.
+		// Session start to first audio sample. Seek with startMs - audioOffsetMs.
 		audioOffsetMs: v.optional(v.number()),
-		// Consent values captured when the session starts.
+		// Consent snapshots captured at session start.
 		consentTutor: v.boolean(),
 		consentStudent: v.boolean(),
 	})
@@ -88,7 +87,7 @@ export default defineSchema({
 		order: v.number(),
 	})
 		.index("sessionId", ["sessionId"])
-		// Retries use session and order as the stable key.
+		// Supports ordered transcript reads for a lesson.
 		.index("sessionId_order", ["sessionId", "order"]),
 
 	annotations: defineTable({
@@ -131,15 +130,10 @@ export default defineSchema({
 		// The queue reads one learner's cards in due order.
 		.index("studentId_dueAt", ["studentId", "dueAt"]),
 
-	/**
-	 * A student saying a flagged word or sentence again, recorded in the
-	 * browser. Stored per attempt rather than spliced into the lesson audio, so
-	 * the original recording stays the immutable record of the lesson.
-	 */
+	/** Browser recordings of attempts to repeat a flagged phrase. */
 	retryRecordings: defineTable({
 		reviewCardId: v.id("reviewCards"),
-		// The note this take is an attempt at, so its expected text is
-		// reachable without going through the card.
+		// The annotation this retry attempts.
 		annotationId: v.id("annotations"),
 		storageId: v.id("_storage"),
 		recordedBy: v.id("users"),
