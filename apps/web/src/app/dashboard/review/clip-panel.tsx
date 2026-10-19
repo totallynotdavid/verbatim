@@ -7,13 +7,6 @@ import { CLIP_PADDING_MS, formatClock } from "@/lib/clip";
 import type { ClipPlayer } from "@/lib/use-clip-player";
 import type { ReviewCard } from "./types";
 
-/**
- * Plays the original lesson clip for one card.
- *
- * The clip window comes from `use-clip-player`, with the same padding and
- * offset handling the transcript viewer uses, so a line sounds the same here
- * as it does in the lesson.
- */
 export function ClipPanel({
 	card,
 	player,

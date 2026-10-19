@@ -13,12 +13,6 @@ import type { ClipPlayer } from "@/lib/use-clip-player";
 import { MAX_RETRY_MS, useMicRecorder } from "@/lib/use-mic-recorder";
 import type { ReviewCard, RetryRecording } from "./types";
 
-/**
- * Records retries for flagged words and plays them beside the original.
- *
- * Each take stays separate from lesson audio. Worker scores are informational;
- * the student's SM-2 grade remains separate.
- */
 export function RetryPanel({
 	card,
 	viewerId,

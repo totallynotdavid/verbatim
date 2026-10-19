@@ -11,7 +11,6 @@ type ConversationRootProps = Omit<
 	"role"
 > & {
 	label: string;
-	/** Transcript line to keep in view. */
 	followId?: string | null;
 	jumpLabel?: string;
 	viewportClassName?: string;
@@ -63,7 +62,6 @@ const ConversationRoot = React.forwardRef<HTMLDivElement, ConversationRootProps>
 			[followedElement],
 		);
 
-		// Avoid moving a line that is already visible.
 		React.useEffect(() => {
 			if (!followId) return;
 			const viewport = viewportRef.current;
@@ -117,9 +115,7 @@ ConversationRoot.displayName = "ConversationRoot";
 
 type ConversationItemProps = React.HTMLAttributes<HTMLDivElement> & {
 	itemId: string;
-	/** Whether this line belongs to the current user. */
 	mine?: boolean;
-	/** Whether this starts a speaker run. */
 	startsGroup?: boolean;
 };
 
@@ -144,11 +140,9 @@ ConversationItem.displayName = "ConversationItem";
 
 type ConversationBubbleProps = React.HTMLAttributes<HTMLDivElement> & {
 	mine?: boolean;
-	/** Whether this is the selected item. */
 	active?: boolean;
 };
 
-/** Keep transcript text selectable. Actions are rendered separately. */
 const ConversationBubble = React.forwardRef<
 	HTMLDivElement,
 	ConversationBubbleProps
