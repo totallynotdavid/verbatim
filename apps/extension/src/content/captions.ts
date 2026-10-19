@@ -1,23 +1,22 @@
 import type { FinalizedLine } from "../shared/protocol";
 
 /** Prevents in-place caption edits from becoming separate transcript lines. */
-export const SETTLE_MS = 1500;
+const SETTLE_MS = 1500;
 
-export const POLL_INTERVAL_MS = 1000;
+const POLL_INTERVAL_MS = 1000;
 
 /**
  * Drop an unchanged row that Meet tears down and re-adds within this window.
  */
 const DEDUPE_WINDOW_MS = 10_000;
 
-// Meet's private class names have changed before, so each selector has a fallback.
 const ROW_CLASS = "nMcdL";
 const SPEAKER_CLASS = "NWpY1d";
 const TEXT_CLASSES = ["ygicle", "VbkSUe"];
 
 /**
- * ARIA labels vary by locale. Match known caption terms and use structure as a
- * fallback.
+ * Match known caption terms across locales. Use structure when Meet exposes no
+ * matching label.
  */
 const CAPTION_LABEL_HINTS = [
 	"caption",
@@ -41,21 +40,13 @@ type Draft = {
 	emitted: string;
 };
 
-export type CaptionCaptureOptions = {
+type CaptionCaptureOptions = {
 	onLine: (line: FinalizedLine) => void;
-	/** Injectable for tests. Defaults to `Date.now`. */
-	now?: () => number;
-	/** Injectable for tests. Defaults to `document`. */
-	root?: Document | Element;
-	settleMs?: number;
 };
 
 /** Reads Meet's live caption panel and emits rows after their text settles. */
 export class CaptionCapture {
 	private readonly onLine: (line: FinalizedLine) => void;
-	private readonly now: () => number;
-	private readonly root: Document | Element;
-	private readonly settleMs: number;
 
 	private observer: MutationObserver | null = null;
 	private pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -67,25 +58,18 @@ export class CaptionCapture {
 
 	constructor(options: CaptionCaptureOptions) {
 		this.onLine = options.onLine;
-		this.now = options.now ?? (() => Date.now());
-		this.root = options.root ?? document;
-		this.settleMs = options.settleMs ?? SETTLE_MS;
 	}
 
 	/** @param startedAtMs Epoch timestamp shared by transcript and audio. */
 	start(startedAtMs?: number): void {
 		if (this.observer !== null) return;
-		this.startedAtMs = startedAtMs ?? this.now();
+		this.startedAtMs = startedAtMs ?? Date.now();
 		this.order = 0;
 		this.drafts.clear();
 		this.recent = [];
 
 		// Observe the document so remounting the captions panel does not stop capture.
-		const target =
-			this.root.nodeType === 9
-				? ((this.root as Document).documentElement ??
-					(this.root as unknown as Node))
-				: (this.root as Node);
+		const target = document.documentElement;
 		this.observer = new MutationObserver(() => this.scan());
 		this.observer.observe(target, {
 			childList: true,
@@ -117,7 +101,7 @@ export class CaptionCapture {
 	}
 
 	scan(): void {
-		const now = this.now();
+		const now = Date.now();
 		const region = this.findCaptionsRegion();
 		this.region = region;
 
@@ -166,7 +150,7 @@ export class CaptionCapture {
 				this.drafts.delete(row);
 				continue;
 			}
-			if (now - draft.lastChangedMs >= this.settleMs) {
+			if (now - draft.lastChangedMs >= SETTLE_MS) {
 				this.finalize(draft);
 			}
 		}
@@ -182,7 +166,7 @@ export class CaptionCapture {
 		if (remainder === "") return;
 
 		const key = `${draft.speaker ?? ""}\0${remainder}`;
-		const now = this.now();
+		const now = Date.now();
 		if (this.recent.some((e) => e.key === key)) {
 			draft.emitted = draft.text;
 			return;
@@ -206,7 +190,7 @@ export class CaptionCapture {
 	}
 
 	private findCaptionsRegion(): Element | null {
-		const scope: ParentNode = this.root;
+		const scope: ParentNode = document;
 
 		// Prefer the ARIA region when Meet marks it as a caption panel.
 		for (const region of scope.querySelectorAll('[role="region"]')) {
@@ -226,7 +210,7 @@ export class CaptionCapture {
 }
 
 /** Returns caption rows without Meet's controls. */
-export function findRows(region: Element): Element[] {
+function findRows(region: Element): Element[] {
 	const byClass = [...region.querySelectorAll(`.${ROW_CLASS}`)];
 	if (byClass.length > 0) {
 		return byClass.filter((row) => !isMeetControl(row));
@@ -261,7 +245,7 @@ function isMeetControl(el: Element): boolean {
 	return withoutControl.trim() === "";
 }
 
-export function extractSpeaker(row: Element): string | undefined {
+function extractSpeaker(row: Element): string | undefined {
 	const byClass = row.querySelector(`.${SPEAKER_CLASS}`);
 	if (byClass !== null) {
 		const name = (byClass.textContent ?? "").trim();
@@ -277,7 +261,7 @@ export function extractSpeaker(row: Element): string | undefined {
 	return undefined;
 }
 
-export function extractText(row: Element): string {
+function extractText(row: Element): string {
 	const spans = [
 		...row.querySelectorAll(TEXT_CLASSES.map((cls) => `.${cls}`).join(", ")),
 	];
