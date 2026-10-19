@@ -53,7 +53,9 @@ The four buttons map to SM-2 grades in
 | Easy   | `4` | 5     | +0.10       |
 
 A failed card comes back the next day. There are no same-day learning steps.
-`reviewCards.grade` accepts the full SM-2 range 0 to 5; the UI sends 2 to 5.
+`reviewCards.grade` accepts the full SM-2 range 0 to 5; the UI sends 2 to 5. The
+**Again** button uses grade 2: it stays in SM-2's failure band without the
+larger ease penalty of grade 0.
 
 ## Card lifecycle
 
@@ -66,15 +68,6 @@ A failed card comes back the next day. There are no same-day learning steps.
   card's schedule alone.
 - **Deletion.** `annotations.remove` deletes the card, every retry on it, the
   stored audio of each, and each retry's score.
-- **Backfill.** Notes written before cards existed have none. This creates them
-  and is safe to run again:
-
-  ```sh
-  cd packages/convex
-  bunx convex run reviewCards:backfill
-  ```
-
-  It returns `{ created, skipped }`, skipping notes that already have a card.
 
 ## Retry recordings
 
