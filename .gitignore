@@ -5,9 +5,9 @@ out/
 
 .turbo/
 
-**/convex/_generated/
 .env.local
 .env*.local
+.convex/
 
 dist/
 build/
