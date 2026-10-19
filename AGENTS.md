@@ -16,7 +16,8 @@ first.
 - Send only retry takes to OpenPronounce, never a lesson recording.
 - Keep `ConvexAuthNextjsServerProvider` in `apps/web/src/app/layout.tsx`.
 - Do not edit `packages/convex/convex/_generated` by hand. `convex dev` and
-  `convex codegen` write it.
+  `convex codegen` write it. `SETUP.md` owns the generated-file contract and
+  regeneration command; other documents link to that section.
 - Change the matching page in `docs/` in the same change as the behaviour it
   describes.
 - Format Markdown with

@@ -6,8 +6,8 @@ Follow [SETUP.md](SETUP.md) to install dependencies, create a Convex deployment
 and run the site. Read [ARCHITECTURE.md](ARCHITECTURE.md) for the layout.
 
 `bun run dev` runs `convex dev`, `next dev` and `wxt` together through
-Turborepo. `convex dev` also writes `packages/convex/convex/_generated`, which
-the web app and extension import. Git ignores that directory.
+Turborepo. The generated-file ownership and refresh command are documented in
+[SETUP.md](SETUP.md#regenerate-generated-code).
 
 ## Check your change
 
@@ -18,15 +18,8 @@ bun run typecheck   # tsc in every package, and `wxt prepare` for the extension
 bun run build       # next build and wxt build
 ```
 
-Both need `packages/convex/convex/_generated`. On a fresh clone it does not
-exist, and they fail with `Cannot find module './_generated/dataModel'`. Write
-it first with `bunx convex dev --once`, or with `bunx convex codegen` once a
-deployment is configured ([SETUP.md](SETUP.md#2-create-the-convex-deployment)):
-
-```sh
-cd packages/convex
-bunx convex dev --once
-```
+Both use the committed generated files. See
+[SETUP.md](SETUP.md#regenerate-generated-code) for the regeneration command.
 
 The extension build writes `apps/extension/.output/chrome-mv3`, which you can
 load unpacked in Chrome. See [SETUP.md](SETUP.md#7-load-the-extension).

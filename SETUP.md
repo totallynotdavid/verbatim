@@ -23,14 +23,25 @@ The first run opens a browser to log in and create or pick a project. It then:
 
 - writes `packages/convex/.env.local` with `CONVEX_DEPLOYMENT` and `CONVEX_URL`
   (`https://<name>.convex.cloud`);
-- writes `packages/convex/convex/_generated/`, the typed API that the website
-  and the extension import. Git ignores the directory;
 - pushes `convex/schema.ts` and the functions once, and exits.
 
 `bun run dev` in step 6 starts the watching `convex dev`, so do not leave
-another one running. `bun run typecheck` and `bun run build` need `_generated`,
-so run this step first on a fresh clone. Once a deployment is configured,
-`bunx convex codegen` writes the directory without pushing.
+another one running. A fresh clone does not need a Convex login to typecheck or
+build because the generated files are committed.
+
+## Regenerate generated code
+
+The committed files in `packages/convex/convex/_generated/` supply the typed API
+used by the web app and extension. After changing the schema or a Convex
+function, regenerate them against the configured deployment:
+
+```sh
+cd packages/convex
+bunx convex codegen
+```
+
+`convex codegen` writes the generated files without changing the code running on
+the deployment. It may contact that deployment to evaluate configuration.
 
 ## 3. Create the Google OAuth client
 

@@ -25,9 +25,8 @@ data, the rules and the audio.
 | `infra/openpronounce` | none                  | Modal deployment descriptor for the OpenPronounce server.                                            |
 
 `apps/web` and `apps/extension` import the typed API from
-`@verbatim/backend/convex/_generated/api`. `convex dev` and `convex codegen`
-write `_generated`, and git ignores it. Typecheck and build need it, so run
-`bunx convex dev --once` in `packages/convex` first on a fresh clone.
+`@verbatim/backend/convex/_generated/api`. The generated-file contract and
+regeneration command live in [SETUP.md](SETUP.md#regenerate-generated-code).
 
 ## Data model
 
