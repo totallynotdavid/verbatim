@@ -40,19 +40,10 @@ export const ANNOTATION_TYPES = [
 
 export type AnnotationType = (typeof ANNOTATION_TYPES)[number]["value"];
 
-/**
- * The types this app offers a recorded retry on.
- *
- * A retry is an audio comparison of the same phrase said twice, so it only
- * says anything about a correction to *how* something was said. Grammar, word
- * choice, interview structure and technical content are corrections to *what*
- * was said: the fix is conceptual, reading the note is what helps, and a
- * microphone next to it is clutter. Filler belongs with pronunciation because
- * "say that again without the ehm" is a real drill you can hear the result of.
- *
- * This hides the recorder. The backend refuses the write regardless of what
- * the client sends.
- */
+export function isAnnotationType(value: string): value is AnnotationType {
+	return ANNOTATION_TYPES.some((type) => type.value === value);
+}
+
 const RETRY_TYPES = new Set<string>(["pronunciation", "filler"]);
 
 export function supportsRetry(type: string): boolean {
@@ -64,8 +55,10 @@ const BY_VALUE = new Map<string, AnnotationTypeMeta>(
 	ANNOTATION_TYPES.map((type) => [type.value, type]),
 );
 
-export function annotationType(value: string): AnnotationTypeMeta {
-	return BY_VALUE.get(value) ?? ANNOTATION_TYPES[0];
+export function annotationType(value: AnnotationType): AnnotationTypeMeta {
+	const type = BY_VALUE.get(value);
+	if (type === undefined) throw new Error(`Unknown annotation type: ${value}`);
+	return type;
 }
 
 /** Static classes let Tailwind include each underline colour. */
