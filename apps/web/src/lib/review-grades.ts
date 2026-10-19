@@ -1,14 +1,3 @@
-/**
- * The four buttons a review ends on, and what each one means to SM-2.
- *
- * SM-2 takes a 0-5 self-rating, which nobody can apply honestly to their own
- * pronunciation. Anki's four-button collapse is the standard fix: one failing
- * button and three passing ones. "Again" maps to 2 rather than 0 because 2 is
- * still inside SM-2's failure band (anything under 3 restarts the card) while
- * costing 0.32 of ease instead of 0.8. A student who cannot yet say a sound
- * the tutor only just flagged is the expected case, not a memory blackout, and
- * two blackouts would otherwise pin the card at the 1.3 ease floor forever.
- */
 export const REVIEW_GRADES = [
 	{
 		grade: 2,

@@ -8,7 +8,7 @@ import { useQuery } from "convex/react";
 import { LineChart } from "lucide-react";
 import Link from "next/link";
 import type { FunctionReturnType } from "convex/server";
-import { annotationType } from "@/lib/annotation-types";
+import { annotationType, isAnnotationType } from "@/lib/annotation-types";
 
 type TrendsData = NonNullable<
 	FunctionReturnType<typeof api.trends.forCurrentPair>
@@ -141,7 +141,11 @@ function RecurringList({
 	return (
 		<ul className="flex flex-col gap-1.5">
 			{terms.map((term) => {
-				const meta = annotationType(term.types[0] ?? "pronunciation");
+				const firstType = term.types[0];
+				if (firstType === undefined || !isAnnotationType(firstType)) {
+					return null;
+				}
+				const meta = annotationType(firstType);
 				return (
 					<li
 						key={term.term}
@@ -185,13 +189,6 @@ function RecurringList({
 	);
 }
 
-/**
- * A bar per lesson, oldest on the left.
- *
- * Deliberately not a line chart: lessons are irregularly spaced events, not
- * samples of a continuous signal, and a line between two of them would imply
- * values on days when nobody spoke.
- */
 function Series({
 	sessions,
 	valueOf,
@@ -333,6 +330,7 @@ function LessonTable({ sessions }: { sessions: SessionTrend[] }) {
 									{Object.entries(session.annotationsByType)
 										.sort((a, b) => b[1] - a[1])
 										.map(([type, count]) => {
+												if (!isAnnotationType(type)) return null;
 											const meta = annotationType(type);
 											return (
 												<Badge.Root

@@ -59,25 +59,26 @@ export const MAX_RUBRIC_NOTE_LENGTH = 1000;
 export const MAX_QUESTION_PROMPT_LENGTH = 2000;
 export const MAX_QUESTION_TAGS = 8;
 
-/** Falls back to the first option for unknown values. */
-export function interviewTopic(value: string) {
-	return (
-		INTERVIEW_TOPICS.find((topic) => topic.value === value) ??
-		INTERVIEW_TOPICS[0]
-	);
+export function interviewTopic(value: InterviewTopic) {
+	const topic = INTERVIEW_TOPICS.find((topic) => topic.value === value);
+	if (topic === undefined) throw new Error(`Unknown interview topic: ${value}`);
+	return topic;
 }
 
-export function interviewDifficulty(value: string) {
-	return (
-		INTERVIEW_DIFFICULTIES.find((level) => level.value === value) ??
-		INTERVIEW_DIFFICULTIES[0]
+export function interviewDifficulty(value: InterviewDifficulty) {
+	const difficulty = INTERVIEW_DIFFICULTIES.find(
+		(level) => level.value === value,
 	);
+	if (difficulty === undefined) {
+		throw new Error(`Unknown interview difficulty: ${value}`);
+	}
+	return difficulty;
 }
 
-export function rubricRating(value: string) {
-	return (
-		RUBRIC_RATINGS.find((rating) => rating.value === value) ?? RUBRIC_RATINGS[0]
-	);
+export function rubricRating(value: RubricRating) {
+	const rating = RUBRIC_RATINGS.find((rating) => rating.value === value);
+	if (rating === undefined) throw new Error(`Unknown rubric rating: ${value}`);
+	return rating;
 }
 
 /** Parses comma-separated tags and drops blanks. */

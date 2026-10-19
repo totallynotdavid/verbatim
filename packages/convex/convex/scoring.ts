@@ -27,12 +27,6 @@ import {
 } from "./model/scoring";
 import { requireSessionTutor } from "./model/sessions";
 
-/**
- * Runs lesson-wide pronunciation analysis through Replicate.
- * A mutation records the run, an action submits the job, and the webhook stores
- * the result. Worker output stays in drafts until a tutor confirms it.
- */
-
 const runStatus = v.union(
 	v.literal("queued"),
 	v.literal("transcribing"),
@@ -49,11 +43,6 @@ const draftValidator = v.object({
 	charEnd: v.optional(v.number()),
 });
 
-/**
- * Starts a tutor-requested lesson analysis.
- * The run is explicit because it incurs GPU cost and creates tutor-reviewed
- * drafts.
- */
 export const start = mutation({
 	args: {
 		sessionId: v.id("lessonSessions"),

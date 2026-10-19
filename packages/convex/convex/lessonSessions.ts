@@ -218,8 +218,7 @@ export const getReview = query({
 					authorId: annotation.authorId,
 					authorName: nameFor(annotation.authorId),
 					isOwn: annotation.authorId === viewerId,
-					// Legacy notes have no source, so treat them as tutor-written.
-					source: annotation.source ?? "tutor",
+					source: annotation.source,
 					createdAt: annotation.createdAt,
 				}))
 				.sort((a, b) => a.createdAt - b.createdAt),

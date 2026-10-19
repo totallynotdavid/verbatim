@@ -13,10 +13,6 @@ import {
 	type StoredFileTarget,
 } from "./model/sessions";
 
-/**
- * A retry is a few seconds of one sentence. Anything longer is a stuck
- * recorder rather than a student saying a flagged phrase again.
- */
 const MAX_RETRY_MS = 120_000;
 
 /** Retry audio applies to corrections of pronunciation or filler words. */

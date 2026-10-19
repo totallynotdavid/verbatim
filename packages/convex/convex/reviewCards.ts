@@ -1,13 +1,8 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import {
-	internalMutation,
-	mutation,
-	query,
-	type QueryCtx,
-} from "./_generated/server";
-import { createForAnnotation, cardForAnnotation } from "./model/reviewCards";
+import { mutation, query, type QueryCtx } from "./_generated/server";
+import { createForAnnotation } from "./model/reviewCards";
 import {
 	LESSON_AUDIO_PATH,
 	RETRY_AUDIO_PATH,
@@ -150,8 +145,7 @@ async function hydrate(
 			charStart: annotation.charStart ?? null,
 			charEnd: annotation.charEnd ?? null,
 			authorName: author?.name ?? null,
-			// Legacy notes have no source, so treat them as tutor-written.
-			source: annotation.source ?? "tutor",
+			source: annotation.source,
 			createdAt: annotation.createdAt,
 		},
 		line: {
@@ -164,8 +158,6 @@ async function hydrate(
 		session: {
 			_id: session._id,
 			startedAt: session.startedAt,
-			// A card's clip comes out of its own lesson recording, so the review
-			// surface loads one file at a time rather than all of them at once.
 			audio:
 				session.audioStorageId === undefined
 					? null
@@ -245,35 +237,5 @@ export const grade = mutation({
 			lastGrade: args.grade,
 		});
 		return next;
-	},
-});
-
-/** Creates missing cards for existing annotations; safe to run repeatedly. */
-export const backfill = internalMutation({
-	args: {},
-	handler: async (ctx) => {
-		const annotations = await ctx.db.query("annotations").collect();
-
-		let created = 0;
-		let skipped = 0;
-		for (const annotation of annotations) {
-			if ((await cardForAnnotation(ctx, annotation._id)) !== null) {
-				skipped++;
-				continue;
-			}
-			const session = await ctx.db.get(annotation.sessionId);
-			if (session === null) {
-				skipped++;
-				continue;
-			}
-			await createForAnnotation(ctx, {
-				annotationId: annotation._id,
-				session,
-				// Backfilled cards are due immediately, like a note written today.
-				now: Date.now(),
-			});
-			created++;
-		}
-		return { created, skipped };
 	},
 });

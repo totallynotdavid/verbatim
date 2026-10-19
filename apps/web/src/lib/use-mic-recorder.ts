@@ -2,15 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/**
- * Microphone capture in an ordinary browser tab, for the retry-recording flow.
- *
- * This is not the extension's recorder: no tab capture, no offscreen document,
- * no Meet. It is `getUserMedia({ audio: true })` and a `MediaRecorder` on the
- * site's own origin, which is why the permission prompt appears against the
- * website and not against the extension.
- */
-
 /** WebM/Opus first, then whatever the browser will admit to supporting. */
 const MIME_CANDIDATES = [
 	"audio/webm;codecs=opus",

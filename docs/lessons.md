@@ -44,8 +44,7 @@ composer is in
 - Every note creates one review card for the student. See
   [study-loop.md](study-loop.md).
 - A note's `source` is `tutor` for typed notes and `auto` for a suggestion the
-  tutor confirmed. Notes created before the field existed read as `tutor`.
-  Confirmed notes show a **Confirmed** mark.
+  tutor confirmed. Confirmed notes show a **Confirmed** mark.
 
 ## Playback
 

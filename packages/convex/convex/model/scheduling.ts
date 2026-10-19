@@ -1,16 +1,3 @@
-/**
- * SM-2 spaced repetition, as published for SuperMemo 2 (Wozniak, 1987) and as
- * implemented by the reference Delphi source at super-memory.com and by the
- * `supermemo` npm package.
- *
- * The algorithm is deliberately unmodified: intervals of 1 day, then 6 days,
- * then `interval * ease`; ease moved by
- * `0.1 - (5 - grade) * (0.08 + (5 - grade) * 0.02)` after every review and
- * floored at 1.3; a grade below 3 restarts the sequence at one day. The only
- * thing this module adds is the mapping from an interval in days to a `dueAt`
- * timestamp, because cards are stored with an absolute due date.
- */
-
 export const DAY_MS = 86_400_000;
 
 export const INITIAL_EASE = 2.5;
