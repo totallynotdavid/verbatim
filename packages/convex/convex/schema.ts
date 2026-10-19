@@ -108,7 +108,7 @@ export default defineSchema({
 		authorId: v.id("users"),
 		createdAt: v.number(),
 		/** `"auto"` marks a tutor-confirmed model suggestion. */
-		source: v.optional(v.union(v.literal("tutor"), v.literal("auto"))),
+		source: v.union(v.literal("tutor"), v.literal("auto")),
 	})
 		.index("sessionId", ["sessionId"])
 		.index("transcriptLineId", ["transcriptLineId"]),
